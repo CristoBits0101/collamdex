@@ -2,6 +2,8 @@ import type { CollamdexConfig } from "../config/extension-config.js";
 import type {
   OllamaChatRequest,
   OllamaChatStreamChunk,
+  OllamaGenerateRequest,
+  OllamaGenerateResponse,
   OllamaModel,
   OllamaPsResponse,
   OllamaRunningModel,
@@ -59,6 +61,27 @@ export class OllamaClient {
   public async listRunningModels(): Promise<readonly OllamaRunningModel[]> {
     const response = await this.fetchJson<OllamaPsResponse>("/ps");
     return response.models;
+  }
+
+  public async generate(
+    request: OllamaGenerateRequest,
+    signal?: AbortSignal
+  ): Promise<OllamaGenerateResponse> {
+    const response = await fetch(`${this.getConfig().baseUrl}/generate`, {
+      body: JSON.stringify(request),
+      headers: {
+        "content-type": "application/json"
+      },
+      method: "POST",
+      signal
+    });
+
+    if (!response.ok) {
+      const message = await response.text();
+      throw new OllamaConnectionError(`Ollama respondio ${response.status}: ${message}`);
+    }
+
+    return (await response.json()) as OllamaGenerateResponse;
   }
 
   public async streamChat(

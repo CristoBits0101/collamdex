@@ -10,6 +10,7 @@ import { OllamaModelService } from "./ollama/ollama-model-service.js";
 import { ModelStatusBar } from "./status-bar/model-status-bar.js";
 import { ChatViewProvider } from "./webview/chat-view-provider.js";
 import { PatchPreviewService } from "./workspace/patch-preview-service.js";
+import { CollamdexInlineCompletionProvider } from "./completion/inline-completion-provider.js";
 
 export function activate(context: vscode.ExtensionContext): void {
   const outputChannel = vscode.window.createOutputChannel("Collamdex");
@@ -43,7 +44,11 @@ export function activate(context: vscode.ExtensionContext): void {
       webviewOptions: {
         retainContextWhenHidden: true
       }
-    })
+    }),
+    vscode.languages.registerInlineCompletionItemProvider(
+      { pattern: "**" },
+      new CollamdexInlineCompletionProvider(client, modelService)
+    )
   );
 
   registerCommands(context, {

@@ -63,3 +63,21 @@ export interface OllamaChatStreamChunk {
   readonly prompt_eval_duration?: number;
   readonly total_duration?: number;
 }
+
+export interface OllamaGenerateRequest {
+  readonly keep_alive?: string | number;
+  readonly model: string;
+  readonly options?: {
+    readonly num_ctx?: number;
+    readonly num_predict?: number;
+    readonly stop?: readonly string[];
+    readonly temperature?: number;
+  };
+  readonly prompt: string;
+  readonly stream: boolean;
+}
+
+export interface OllamaGenerateResponse {
+  readonly done: boolean;
+  readonly response: string;
+}
