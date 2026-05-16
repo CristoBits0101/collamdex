@@ -191,8 +191,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         onToken: (token) => this.post({ type: "assistant-token", token })
       });
 
-      if (result && this.agentRuntime.hasApplicableChanges(result.text)) {
-        const changes = this.agentRuntime.getChangeSummary(result.text);
+      if (result && this.agentRuntime.hasApplicableChanges(result.text, prompt)) {
+        const changes = this.agentRuntime.getChangeSummary(result.text, prompt);
         this.post({
           detail: "Cambios detectados. Abriendo preview y preparando confirmacion.",
           direction: "forward",

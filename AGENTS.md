@@ -183,6 +183,7 @@ corepack pnpm run vsce:package
 
 - Mantener cambios pequenos y coherentes con la arquitectura existente.
 - Preferir APIs de VS Code y helpers locales antes de introducir dependencias.
+- No usar APIs, patrones ni codigo deprecado; si no hay alternativa razonable, documentar el motivo y acotar su uso.
 - No ampliar permisos de escritura/terminal sin una confirmacion clara en UI.
 - Actualizar prompts y documentacion cuando se anada un formato de accion nuevo.
 - Validar con `pnpm run check` tras cambios de TypeScript.

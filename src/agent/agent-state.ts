@@ -23,5 +23,6 @@ export interface AgentRunOptions {
 
 export interface AgentRunResult {
   readonly model: string;
+  readonly task?: string;
   readonly text: string;
 }

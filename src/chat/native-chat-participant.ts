@@ -1,64 +1,48 @@
 import * as vscode from "vscode";
 
-import type { CollamdexConfig } from "../config/extension-config.js";
-import { OllamaClient } from "../ollama/ollama-client.js";
-import { OllamaModelService } from "../ollama/ollama-model-service.js";
-import { getActiveEditorContext } from "../workspace/active-editor-context.js";
-import { getDiagnosticsContext } from "../workspace/diagnostics-context.js";
+import { AgentRuntime } from "../agent/agent-loop.js";
+import type { PatchApplyResult } from "../workspace/patch-preview-service.js";
 
 export function registerNativeChatParticipant(
   context: vscode.ExtensionContext,
-  client: OllamaClient,
-  modelService: OllamaModelService,
-  getConfig: () => CollamdexConfig
+  agentRuntime: AgentRuntime
 ): void {
   const participant = vscode.chat.createChatParticipant(
     "collamdex.collamdex",
     async (request, _chatContext, response, token) => {
-      const modelName = await modelService.ensureSelectedModel();
-
-      if (!modelName) {
-        response.markdown(
-          "No hay modelo seleccionado. Ejecuta `Collamdex: Seleccionar modelo` o abre el panel Collamdex."
-        );
-        return;
-      }
-
-      const isHealthy = await client.healthCheck();
-
-      if (!isHealthy) {
-        response.markdown("Ollama no esta disponible. Inicia Ollama localmente y vuelve a intentarlo.");
-        return;
-      }
-
-      const config = getConfig();
-      const abortController = new AbortController();
-      const tokenDisposable = token.onCancellationRequested(() => abortController.abort());
+      const tokenDisposable = token.onCancellationRequested(() => agentRuntime.cancel());
 
       try {
-        await client.streamChat(
-          {
-            keep_alive: config.keepAlive,
-            messages: [
-              {
-                content: getSystemPrompt(),
-                role: "system"
-              },
-              {
-                content: buildPrompt(request.prompt, config),
-                role: "user"
-              }
-            ],
-            model: modelName,
-            options: {
-              num_ctx: config.numCtx,
-              temperature: config.temperature
-            },
-            stream: true
+        const result = await agentRuntime.runTask(request.prompt, {
+          onError: (message) => {
+            response.markdown(message);
           },
-          (chunk) => response.markdown(chunk),
-          abortController.signal
-        );
+          onProgress: ({ detail, phase }) => {
+            response.progress(`${phase}: ${detail}`);
+          },
+          onStart: ({ detail }) => {
+            response.progress(detail);
+          },
+          onToken: (chunk) => {
+            response.markdown(chunk);
+          }
+        });
+
+        if (!result) {
+          return;
+        }
+
+        const applyResult = await agentRuntime.showResult(result, {
+          openMarkdownWhenNoPatch: false
+        });
+
+        if (applyResult) {
+          response.markdown(`\n\n${formatApplyResult(applyResult)}`);
+        } else if (looksLikeWorkspaceMutationRequest(request.prompt)) {
+          response.markdown(
+            "\n\nNo he detectado un diff ni un bloque `collamdex-files` aplicable, asi que no se escribio nada."
+          );
+        }
       } finally {
         tokenDisposable.dispose();
       }
@@ -69,40 +53,27 @@ export function registerNativeChatParticipant(
   context.subscriptions.push(participant);
 }
 
-function buildPrompt(userPrompt: string, config: CollamdexConfig): string {
-  const editorContext = getActiveEditorContext(config.maxPromptChars);
-  const diagnostics = getDiagnosticsContext(Math.min(config.maxPromptChars, 12000));
+function formatApplyResult(result: PatchApplyResult): string {
+  if (result.status === "applied") {
+    return `Cambios aplicados: ${formatFileChangeCount(result.changes)}.`;
+  }
 
-  return [
-    `Tarea del usuario: ${userPrompt}`,
-    "",
-    "Contexto del editor:",
-    editorContext
-      ? [
-          `Ruta: ${editorContext.relativePath}`,
-          `Lenguaje: ${editorContext.languageId}`,
-          `Hay seleccion: ${editorContext.hasSelection}`,
-          "",
-          "Seleccion:",
-          editorContext.selectedText || "[sin seleccion]",
-          "",
-          "Archivo:",
-          editorContext.documentText
-        ].join("\n")
-      : "[sin editor activo]",
-    "",
-    "Diagnosticos:",
-    diagnostics
-  ].join("\n");
+  return result.message;
 }
 
-function getSystemPrompt(): string {
-  return [
-    "Eres Collamdex, un agente local de codificacion dentro de VS Code.",
-    "Usas Ollama local y no dependes de servicios externos.",
-    "Responde en espanol claro.",
-    "No inventes archivos no recibidos.",
-    "Si propones cambios, devuelve un patch unificado cuando sea viable.",
-    "No sugieras comandos destructivos."
-  ].join("\n");
+function formatFileChangeCount(changes: readonly { readonly path: string }[]): string {
+  return `${changes.length} archivo${changes.length === 1 ? "" : "s"}`;
+}
+
+function looksLikeWorkspaceMutationRequest(prompt: string): boolean {
+  return /\b(crea|crear|cree|genera|generar|escribe|escribir|anade|agrega|modifica|actualiza|edita|corrige|arregla|implementa|elimina|borra|reemplaza|write|create|edit|modify|update|delete|remove|add|implement|fix|generate|replace)\b/.test(
+    normalizeForSearch(prompt)
+  );
+}
+
+function normalizeForSearch(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
 }

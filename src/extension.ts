@@ -51,7 +51,7 @@ export function activate(context: vscode.ExtensionContext): void {
     chatViewProvider,
     modelService
   });
-  registerNativeChatParticipant(context, client, modelService, getConfig);
+  registerNativeChatParticipant(context, agentRuntime);
 
   void client.healthCheck().then((isHealthy) => {
     if (!isHealthy) {

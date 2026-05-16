@@ -43,13 +43,20 @@ interface WorkspaceFileOperation {
   readonly path: string;
 }
 
+interface ProposedChangeExtractionOptions {
+  readonly intentText?: string;
+}
+
 export class PatchPreviewService {
   public hasPatch(content: string): boolean {
     return extractUnifiedDiff(content) !== undefined;
   }
 
-  public hasApplicableChanges(content: string): boolean {
-    return extractProposedWorkspaceChange(content) !== undefined;
+  public hasApplicableChanges(
+    content: string,
+    options: ProposedChangeExtractionOptions = {}
+  ): boolean {
+    return extractProposedWorkspaceChange(content, options) !== undefined;
   }
 
   public getPatchSummary(content: string): readonly PatchFileChange[] {
@@ -57,8 +64,11 @@ export class PatchPreviewService {
     return patch ? summarizePatch(patch) : [];
   }
 
-  public getChangeSummary(content: string): readonly PatchFileChange[] {
-    return extractProposedWorkspaceChange(content)?.changes ?? [];
+  public getChangeSummary(
+    content: string,
+    options: ProposedChangeExtractionOptions = {}
+  ): readonly PatchFileChange[] {
+    return extractProposedWorkspaceChange(content, options)?.changes ?? [];
   }
 
   public async showMarkdown(title: string, content: string): Promise<void> {
@@ -87,8 +97,12 @@ export class PatchPreviewService {
     void vscode.window.setStatusBarMessage(title, 3000);
   }
 
-  public async showChangePreview(title: string, content: string): Promise<PatchApplyResult> {
-    const proposedChange = extractProposedWorkspaceChange(content);
+  public async showChangePreview(
+    title: string,
+    content: string,
+    options: ProposedChangeExtractionOptions = {}
+  ): Promise<PatchApplyResult> {
+    const proposedChange = extractProposedWorkspaceChange(content, options);
 
     if (!proposedChange) {
       const message =
@@ -105,8 +119,11 @@ export class PatchPreviewService {
     };
   }
 
-  public async applyProposedChanges(content: string): Promise<PatchApplyResult> {
-    const proposedChange = extractProposedWorkspaceChange(content);
+  public async applyProposedChanges(
+    content: string,
+    options: ProposedChangeExtractionOptions = {}
+  ): Promise<PatchApplyResult> {
+    const proposedChange = extractProposedWorkspaceChange(content, options);
 
     if (!proposedChange) {
       const message =
@@ -125,9 +142,10 @@ export class PatchPreviewService {
   public async showPatchAndOfferApply(
     title: string,
     content: string,
-    requireConfirmation: boolean
+    requireConfirmation: boolean,
+    options: ProposedChangeExtractionOptions = {}
   ): Promise<PatchApplyResult> {
-    const proposedChange = extractProposedWorkspaceChange(content);
+    const proposedChange = extractProposedWorkspaceChange(content, options);
 
     if (!proposedChange) {
       const message =
@@ -157,7 +175,7 @@ export class PatchPreviewService {
       }
     }
 
-    return this.applyProposedChanges(content);
+    return this.applyProposedChanges(content, options);
   }
 
   private async showPreviewDocument(
@@ -202,6 +220,17 @@ export class PatchPreviewService {
       void vscode.window.showInformationMessage(message);
       return { changes, message, status: "applied" };
     } catch (error) {
+      const fallbackOperations = extractCreatePatchFileOperations(patch, changes);
+      if (fallbackOperations.length > 0) {
+        const fallbackResult = await this.applyFileOperations(fallbackOperations, changes);
+
+        if (fallbackResult.status === "applied") {
+          const message = "Patch de creacion aplicado como escritura completa.";
+          void vscode.window.showInformationMessage(message);
+          return { changes, message, status: "applied" };
+        }
+      }
+
       const message = `No se pudo aplicar el patch: ${formatCommandError(error)}`;
       void vscode.window.showErrorMessage(message);
       return { changes, message, status: "failed" };
@@ -292,7 +321,10 @@ function extractUnifiedDiff(content: string): string | undefined {
   return looksLikeUnifiedDiff(trimmed) ? ensureTrailingNewline(trimmed) : undefined;
 }
 
-function extractProposedWorkspaceChange(content: string): ProposedWorkspaceChange | undefined {
+function extractProposedWorkspaceChange(
+  content: string,
+  options: ProposedChangeExtractionOptions = {}
+): ProposedWorkspaceChange | undefined {
   const patch = extractUnifiedDiff(content);
 
   if (patch) {
@@ -304,7 +336,7 @@ function extractProposedWorkspaceChange(content: string): ProposedWorkspaceChang
     };
   }
 
-  const fileOperations = extractWorkspaceFileOperations(content);
+  const fileOperations = extractWorkspaceFileOperations(content, options.intentText);
 
   if (fileOperations.length === 0) {
     return undefined;
@@ -331,7 +363,10 @@ function ensureTrailingNewline(value: string): string {
   return value.endsWith("\n") ? value : `${value}\n`;
 }
 
-function extractWorkspaceFileOperations(content: string): readonly WorkspaceFileOperation[] {
+function extractWorkspaceFileOperations(
+  content: string,
+  intentText?: string
+): readonly WorkspaceFileOperation[] {
   const operations: WorkspaceFileOperation[] = [];
   const fencedBlocks = content.matchAll(
     /```(collamdex-files|collamdex-file|collamdex-tool)\s*\r?\n([\s\S]*?)```/gi
@@ -358,7 +393,11 @@ function extractWorkspaceFileOperations(content: string): readonly WorkspaceFile
   }
 
   if (operations.length === 0) {
-    const plainMarkdownOperation = extractPlainMarkdownFileOperation(content);
+    operations.push(...extractJsonFileOperations(content));
+  }
+
+  if (operations.length === 0) {
+    const plainMarkdownOperation = extractPlainMarkdownFileOperation(content, intentText);
     if (plainMarkdownOperation) {
       operations.push(plainMarkdownOperation);
     }
@@ -367,8 +406,116 @@ function extractWorkspaceFileOperations(content: string): readonly WorkspaceFile
   return operations;
 }
 
-function extractPlainMarkdownFileOperation(content: string): WorkspaceFileOperation | undefined {
-  const intent = extractPlainFileIntent(content);
+function extractJsonFileOperations(content: string): readonly WorkspaceFileOperation[] {
+  const operations: WorkspaceFileOperation[] = [];
+  const jsonBlocks = content.matchAll(/```json\s*\r?\n([\s\S]*?)```/gi);
+
+  for (const match of jsonBlocks) {
+    const parsedOperations = parseFileOperationsJson(match[1]?.trim());
+    operations.push(...parsedOperations);
+  }
+
+  if (operations.length > 0) {
+    return operations;
+  }
+
+  const trimmed = content.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+    return [];
+  }
+
+  return parseFileOperationsJson(trimmed);
+}
+
+function parseFileOperationsJson(raw: string | undefined): readonly WorkspaceFileOperation[] {
+  if (!raw) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return normalizeFileOperationContainer(parsed);
+  } catch {
+    return [];
+  }
+}
+
+function extractCreatePatchFileOperations(
+  patch: string,
+  changes: readonly PatchFileChange[]
+): readonly WorkspaceFileOperation[] {
+  if (changes.length === 0 || changes.some((change) => change.operation !== "create")) {
+    return [];
+  }
+
+  const operations: WorkspaceFileOperation[] = [];
+  const lines = patch.split(/\r?\n/);
+  let currentContentLines: string[] = [];
+  let currentPath = "";
+  let hasNoTrailingNewlineMarker = false;
+  let inHunk = false;
+
+  const flush = () => {
+    if (!currentPath) {
+      return;
+    }
+
+    const content = currentContentLines.join("\n") + (hasNoTrailingNewlineMarker ? "" : "\n");
+    operations.push({
+      content,
+      operation: "write",
+      path: currentPath
+    });
+    currentContentLines = [];
+    currentPath = "";
+    hasNoTrailingNewlineMarker = false;
+    inHunk = false;
+  };
+
+  for (const line of lines) {
+    if (line.startsWith("diff --git ")) {
+      flush();
+      continue;
+    }
+
+    if (line.startsWith("+++ ")) {
+      const newPath = normalizePatchPath(line.slice(4).trim());
+      if (newPath !== "/dev/null") {
+        currentPath = newPath;
+      }
+      continue;
+    }
+
+    if (line.startsWith("@@ ")) {
+      inHunk = true;
+      continue;
+    }
+
+    if (!inHunk) {
+      continue;
+    }
+
+    if (line.startsWith("\\ No newline at end of file")) {
+      hasNoTrailingNewlineMarker = true;
+      continue;
+    }
+
+    if (line.startsWith("+") && !line.startsWith("+++")) {
+      currentContentLines.push(line.slice(1));
+    } else if (line.startsWith(" ")) {
+      currentContentLines.push(line.slice(1));
+    }
+  }
+
+  flush();
+  return operations.length === changes.length ? operations : [];
+}
+
+function extractPlainMarkdownFileOperation(
+  content: string,
+  intentText?: string
+): WorkspaceFileOperation | undefined {
+  const intent = extractPlainFileIntent(content) ?? extractPlainFileIntent(intentText ?? "");
 
   if (!intent || !isMarkdownPath(intent.path)) {
     return undefined;
@@ -390,7 +537,7 @@ function extractPlainMarkdownFileOperation(content: string): WorkspaceFileOperat
 function extractPlainFileIntent(
   content: string
 ): { readonly operation: WorkspaceFileWriteOperation; readonly path: string } | undefined {
-  const lines = content.split(/\r?\n/).slice(0, 40);
+  const lines = content.split(/\r?\n/).slice(0, 80);
 
   for (const line of lines) {
     if (!hasFileWriteIntent(line)) {
@@ -409,7 +556,7 @@ function extractPlainFileIntent(
     };
   }
 
-  return extractMarkdownHeadingFileIntent(content);
+  return extractMarkdownHeadingFileIntent(content) ?? extractMarkdownPathMentionFileIntent(lines);
 }
 
 function hasFileWriteIntent(value: string): boolean {
@@ -447,6 +594,41 @@ function extractFirstRelativePathCandidate(value: string): string | undefined {
   }
 
   return undefined;
+}
+
+function extractMarkdownPathMentionFileIntent(
+  lines: readonly string[]
+): { readonly operation: WorkspaceFileWriteOperation; readonly path: string } | undefined {
+  const markdownPaths = new Set<string>();
+
+  for (const line of lines) {
+    relativeFilePathPattern.lastIndex = 0;
+    let match = relativeFilePathPattern.exec(line);
+
+    while (match) {
+      const candidate = sanitizePathCandidate(match[1] ?? "");
+
+      if (candidate && isSafeRelativePathCandidate(candidate) && isMarkdownPath(candidate)) {
+        markdownPaths.add(candidate);
+      }
+
+      match = relativeFilePathPattern.exec(line);
+    }
+  }
+
+  if (markdownPaths.size !== 1) {
+    return undefined;
+  }
+
+  const [pathCandidate] = [...markdownPaths];
+  if (!pathCandidate) {
+    return undefined;
+  }
+
+  return {
+    operation: "write",
+    path: pathCandidate
+  };
 }
 
 function extractMarkdownHeadingFileIntent(
@@ -502,15 +684,21 @@ function extractMarkdownDocumentForPath(content: string, targetPath: string): st
     return fencedContent;
   }
 
+  const singleMarkdownFenceContent = extractSingleMarkdownFence(content);
+
+  if (singleMarkdownFenceContent) {
+    return singleMarkdownFenceContent;
+  }
+
   const lines = content.split(/\r?\n/);
   const headingIndex = lines.findIndex((line) => isFileTitleHeading(line, targetPath));
 
-  if (headingIndex < 0) {
-    return undefined;
+  if (headingIndex >= 0) {
+    const markdownContent = lines.slice(headingIndex).join("\n").trimEnd();
+    return markdownContent.trim().length > 0 ? ensureTrailingNewline(markdownContent) : undefined;
   }
 
-  const markdownContent = lines.slice(headingIndex).join("\n").trimEnd();
-  return markdownContent.trim().length > 0 ? ensureTrailingNewline(markdownContent) : undefined;
+  return extractMarkdownFromFirstHeading(content);
 }
 
 function extractMarkdownFenceForPath(content: string, targetPath: string): string | undefined {
@@ -538,6 +726,39 @@ function extractMarkdownFenceForPath(content: string, targetPath: string): strin
   }
 
   return undefined;
+}
+
+function extractSingleMarkdownFence(content: string): string | undefined {
+  const markdownBlocks: string[] = [];
+  const fencedBlocks = content.matchAll(/```([A-Za-z0-9_-]*)[^\n]*\r?\n([\s\S]*?)```/g);
+
+  for (const match of fencedBlocks) {
+    const language = (match[1] ?? "").toLowerCase();
+
+    if (!isMarkdownFenceLanguage(language)) {
+      continue;
+    }
+
+    const raw = match[2]?.trimEnd();
+
+    if (raw && raw.trim().length > 0) {
+      markdownBlocks.push(ensureTrailingNewline(raw));
+    }
+  }
+
+  return markdownBlocks.length === 1 ? markdownBlocks[0] : undefined;
+}
+
+function extractMarkdownFromFirstHeading(content: string): string | undefined {
+  const lines = content.split(/\r?\n/);
+  const headingIndex = lines.findIndex((line) => /^#{1,6}\s+\S/.test(line.trim()));
+
+  if (headingIndex < 0) {
+    return undefined;
+  }
+
+  const markdownContent = lines.slice(headingIndex).join("\n").trimEnd();
+  return markdownContent.trim().length > 0 ? ensureTrailingNewline(markdownContent) : undefined;
 }
 
 function isMarkdownFenceLanguage(value: string): boolean {
@@ -590,7 +811,7 @@ function normalizeToolCall(value: unknown): readonly WorkspaceFileOperation[] {
 
   const name = typeof value.name === "string" ? value.name : "";
   const input = isRecord(value.input) ? value.input : {};
-  const normalizedName = name.toLowerCase();
+  const normalizedName = normalizeToolName(name);
 
   if (normalizedName === "applyworkspaceedit") {
     return normalizeFileOperationContainer(input.changes ?? input.operations ?? input);
@@ -621,6 +842,10 @@ function normalizeToolCall(value: unknown): readonly WorkspaceFileOperation[] {
   return [];
 }
 
+function normalizeToolName(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
 function normalizeFileOperationContainer(value: unknown): readonly WorkspaceFileOperation[] {
   const candidates = Array.isArray(value)
     ? value
@@ -642,7 +867,17 @@ function normalizeFileOperation(value: unknown): WorkspaceFileOperation | undefi
     return undefined;
   }
 
-  const pathValue = value.path ?? value.file ?? value.target;
+  const pathValue =
+    value.path ??
+    value.file ??
+    value.filename ??
+    value.fileName ??
+    value.filePath ??
+    value.filepath ??
+    value.relativePath ??
+    value.targetPath ??
+    value.target_path ??
+    value.target;
 
   if (typeof pathValue !== "string" || pathValue.trim().length === 0) {
     return undefined;
@@ -664,12 +899,20 @@ function normalizeFileOperation(value: unknown): WorkspaceFileOperation | undefi
     };
   }
 
-  if (typeof value.content !== "string") {
+  const contentValue =
+    value.content ??
+    value.contents ??
+    value.newContent ??
+    value.new_content ??
+    value.body ??
+    value.text;
+
+  if (typeof contentValue !== "string") {
     return undefined;
   }
 
   return {
-    content: value.content,
+    content: contentValue,
     operation,
     path: pathValue.trim()
   };

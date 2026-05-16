@@ -59,24 +59,26 @@ export class AgentRuntime {
     return this.patchPreviewService.hasPatch(text);
   }
 
-  public hasApplicableChanges(text: string): boolean {
-    return this.patchPreviewService.hasApplicableChanges(text);
+  public hasApplicableChanges(text: string, intentText?: string): boolean {
+    return this.patchPreviewService.hasApplicableChanges(text, { intentText });
   }
 
   public getPatchSummary(text: string): readonly PatchFileChange[] {
     return this.patchPreviewService.getPatchSummary(text);
   }
 
-  public getChangeSummary(text: string): readonly PatchFileChange[] {
-    return this.patchPreviewService.getChangeSummary(text);
+  public getChangeSummary(text: string, intentText?: string): readonly PatchFileChange[] {
+    return this.patchPreviewService.getChangeSummary(text, { intentText });
   }
 
   public async previewChanges(result: AgentRunResult): Promise<PatchApplyResult> {
-    return this.patchPreviewService.showChangePreview(`Collamdex - ${result.model}`, result.text);
+    return this.patchPreviewService.showChangePreview(`Collamdex - ${result.model}`, result.text, {
+      intentText: result.task
+    });
   }
 
   public async applyChanges(result: AgentRunResult): Promise<PatchApplyResult> {
-    return this.patchPreviewService.applyProposedChanges(result.text);
+    return this.patchPreviewService.applyProposedChanges(result.text, { intentText: result.task });
   }
 
   public async showResult(
@@ -87,13 +89,16 @@ export class AgentRuntime {
     } = {}
   ): Promise<PatchApplyResult | undefined> {
     const title = `Collamdex - ${result.model}`;
-    const containsApplicableChanges = this.patchPreviewService.hasApplicableChanges(result.text);
+    const containsApplicableChanges = this.patchPreviewService.hasApplicableChanges(result.text, {
+      intentText: result.task
+    });
 
     if (containsApplicableChanges) {
       const applyResult = await this.patchPreviewService.showPatchAndOfferApply(
         title,
         result.text,
-        this.getConfig().requireDiffConfirmation
+        this.getConfig().requireDiffConfirmation,
+        { intentText: result.task }
       );
 
       if (applyResult.status === "applied" || !options.openMarkdownWhenNoPatch) {
@@ -312,6 +317,7 @@ export class AgentRuntime {
 
       const result = {
         model: modelName,
+        task: options.task,
         text
       };
       events?.onComplete?.({
@@ -336,7 +342,7 @@ export class AgentRuntime {
     options: AgentRunOptions,
     responseText: string
   ): boolean {
-    if (this.patchPreviewService.hasApplicableChanges(responseText)) {
+    if (this.patchPreviewService.hasApplicableChanges(responseText, { intentText: options.task })) {
       return false;
     }
 
