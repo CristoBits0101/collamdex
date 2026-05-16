@@ -1,3 +1,6 @@
+// ===============================================================
+// Script para compilar Collamdex.
+// ===============================================================
 import esbuild from "esbuild";
 
 const production = process.argv.includes("--production");
