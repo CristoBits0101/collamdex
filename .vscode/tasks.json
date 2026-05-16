@@ -1,0 +1,19 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "pnpm: package",
+      "type": "shell",
+      "command": "corepack pnpm run package",
+      "problemMatcher": "$tsc",
+      "group": "build"
+    },
+    {
+      "label": "pnpm: watch",
+      "type": "shell",
+      "command": "corepack pnpm run watch",
+      "problemMatcher": "$tsc-watch",
+      "isBackground": true
+    }
+  ]
+}

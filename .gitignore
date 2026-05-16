@@ -1,0 +1,7 @@
+dist/
+node_modules/
+*.vsix
+*.log
+.vscode-test/
+coverage/
+pnpm-debug.log*

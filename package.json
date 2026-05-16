@@ -1,0 +1,212 @@
+{
+  "name": "collamdex",
+  "displayName": "Collamdex",
+  "description": "Agente de codificacion local-first para VS Code con Ollama.",
+  "version": "0.1.1",
+  "publisher": "reuda",
+  "license": "MIT",
+  "private": true,
+  "packageManager": "pnpm@9.15.4",
+  "engines": {
+    "vscode": "^1.120.0"
+  },
+  "categories": [
+    "AI",
+    "Programming Languages",
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "files": [
+    "dist",
+    "media",
+    "LICENSE",
+    "README.md",
+    "package.json"
+  ],
+  "scripts": {
+    "check": "tsc --noEmit && node ./esbuild.mjs --production",
+    "check-types": "tsc --noEmit",
+    "compile": "node ./esbuild.mjs --production",
+    "package": "node ./esbuild.mjs --production",
+    "watch": "node ./esbuild.mjs --watch",
+    "vsce:package": "node ./esbuild.mjs --production && vsce package --no-dependencies --allow-missing-repository"
+  },
+  "contributes": {
+    "chatParticipants": [
+      {
+        "id": "collamdex.collamdex",
+        "fullName": "Collamdex",
+        "name": "collamdex",
+        "description": "Pregunta a Collamdex usando Ollama local.",
+        "isSticky": true
+      }
+    ],
+    "commands": [
+      {
+        "command": "collamdex.openChat",
+        "title": "Abrir chat",
+        "category": "Collamdex"
+      },
+      {
+        "command": "collamdex.openView",
+        "title": "Abrir panel lateral",
+        "category": "Collamdex"
+      },
+      {
+        "command": "collamdex.selectModel",
+        "title": "Seleccionar modelo",
+        "category": "Collamdex"
+      },
+      {
+        "command": "collamdex.refreshModels",
+        "title": "Refrescar modelos de Ollama",
+        "category": "Collamdex"
+      },
+      {
+        "command": "collamdex.explainSelection",
+        "title": "Explicar seleccion",
+        "category": "Collamdex"
+      },
+      {
+        "command": "collamdex.fixSelection",
+        "title": "Proponer fix para seleccion",
+        "category": "Collamdex"
+      },
+      {
+        "command": "collamdex.generateTests",
+        "title": "Generar tests para archivo",
+        "category": "Collamdex"
+      },
+      {
+        "command": "collamdex.reviewActiveFile",
+        "title": "Revisar archivo activo",
+        "category": "Collamdex"
+      },
+      {
+        "command": "collamdex.runAgentTask",
+        "title": "Ejecutar agente en tarea",
+        "category": "Collamdex"
+      },
+      {
+        "command": "collamdex.cancelGeneration",
+        "title": "Cancelar generacion",
+        "category": "Collamdex"
+      }
+    ],
+    "configuration": {
+      "title": "Collamdex",
+      "properties": {
+        "collamdex.ollama.baseUrl": {
+          "type": "string",
+          "default": "http://localhost:11434/api",
+          "description": "URL base de la API local de Ollama."
+        },
+        "collamdex.model.default": {
+          "type": "string",
+          "default": "",
+          "description": "Modelo Ollama por defecto. Si esta vacio, Collamdex pedira seleccionar uno."
+        },
+        "collamdex.hardware.maxSystemRamRatio": {
+          "type": "number",
+          "default": 0.65,
+          "minimum": 0.1,
+          "maximum": 0.95,
+          "description": "Porcentaje maximo de RAM que Collamdex considera seguro para modelos locales."
+        },
+        "collamdex.generation.keepAlive": {
+          "type": "string",
+          "default": "30s",
+          "description": "Tiempo keep_alive enviado a Ollama. Usa 0 para descargar el modelo tras responder."
+        },
+        "collamdex.generation.numCtx": {
+          "type": "number",
+          "default": 4096,
+          "minimum": 512,
+          "maximum": 32768,
+          "description": "Ventana de contexto solicitada a Ollama."
+        },
+        "collamdex.generation.temperature": {
+          "type": "number",
+          "default": 0.2,
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Temperatura para respuestas de codigo."
+        },
+        "collamdex.agent.maxIterations": {
+          "type": "number",
+          "default": 6,
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Iteraciones maximas del agente por tarea."
+        },
+        "collamdex.safety.requireDiffConfirmation": {
+          "type": "boolean",
+          "default": true,
+          "description": "Obliga a revisar cambios antes de aplicarlos."
+        },
+        "collamdex.safety.maxPromptChars": {
+          "type": "number",
+          "default": 60000,
+          "minimum": 4000,
+          "maximum": 240000,
+          "description": "Tamano maximo del contexto enviado al modelo."
+        }
+      }
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "command": "collamdex.explainSelection",
+          "when": "editorHasSelection",
+          "group": "collamdex@1"
+        },
+        {
+          "command": "collamdex.fixSelection",
+          "when": "editorHasSelection",
+          "group": "collamdex@2"
+        },
+        {
+          "command": "collamdex.reviewActiveFile",
+          "group": "collamdex@3"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "collamdex.selectModel",
+          "group": "navigation@1",
+          "when": "view == collamdex.chatView"
+        },
+        {
+          "command": "collamdex.refreshModels",
+          "group": "navigation@2",
+          "when": "view == collamdex.chatView"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "collamdex",
+          "title": "Collamdex",
+          "icon": "media/collamdex.svg"
+        }
+      ]
+    },
+    "views": {
+      "collamdex": [
+        {
+          "id": "collamdex.chatView",
+          "name": "Chat local",
+          "type": "webview"
+        }
+      ]
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "@types/vscode": "1.120.0",
+    "@vscode/vsce": "^3.3.2",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.3"
+  }
+}
