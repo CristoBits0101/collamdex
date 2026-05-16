@@ -212,6 +212,7 @@
         {
           "id": "collamdex.chatView",
           "name": "Chat local",
+          "icon": "media/collamdex.svg",
           "type": "webview"
         }
       ]
