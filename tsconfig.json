@@ -1,17 +1,34 @@
+// ===============================================================
+// Archivo de configuración de TypeScript para el proyecto.
+// ===============================================================
 {
+  // Opciones de compilación.
   "compilerOptions": {
+    // Sistema de módulos.
     "module": "NodeNext",
+    // Resolución de módulos.
     "moduleResolution": "NodeNext",
+    // Objetivo de compilación.
     "target": "ES2022",
+    // Librerías a usar.
     "lib": ["ES2022"],
+    // Directorio raíz.
     "rootDir": "src",
+    // Estricto.
     "strict": true,
+    // Forzar el uso de mayúsculas y minúsculas.
     "forceConsistentCasingInFileNames": true,
+    // No permitir saltos de caso en switch.
     "noFallthroughCasesInSwitch": true,
+    // No permitir sobreescritura de métodos.
     "noImplicitOverride": true,
+    // No permitir acceso a índices no controlados.
     "noUncheckedIndexedAccess": true,
+    // No permitir saltos de librería.
     "skipLibCheck": true,
+    // Tipos a usar.
     "types": ["node", "vscode"]
   },
+  // Archivos a incluir en la compilación.
   "include": ["src"]
 }
