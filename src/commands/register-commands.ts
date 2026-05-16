@@ -55,15 +55,8 @@ export function registerCommands(
         return;
       }
 
-      const result = await dependencies.agentRuntime.runTask(task);
-
-      if (result) {
-        const document = await vscode.workspace.openTextDocument({
-          content: result.text,
-          language: "markdown"
-        });
-        await vscode.window.showTextDocument(document, vscode.ViewColumn.Beside);
-      }
+      await openCollamdexView();
+      await dependencies.chatViewProvider.runPrompt(task);
     }),
     vscode.commands.registerCommand("collamdex.cancelGeneration", () => {
       dependencies.chatViewProvider.cancel();

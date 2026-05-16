@@ -1,9 +1,10 @@
 import * as vscode from "vscode";
 
+import { AgentRuntime } from "../agent/agent-loop.js";
 import { CapacityPolicy } from "../capacity/capacity-policy.js";
 import { formatBytes } from "../capacity/model-capacity-estimator.js";
 import type { CollamdexConfig } from "../config/extension-config.js";
-import { OllamaClient, type OllamaChatResult } from "../ollama/ollama-client.js";
+import { OllamaClient } from "../ollama/ollama-client.js";
 import { OllamaModelService } from "../ollama/ollama-model-service.js";
 import type { OllamaModel } from "../ollama/ollama-types.js";
 import { getChatViewHtml } from "./chat-view-html.js";
@@ -49,6 +50,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private readonly client: OllamaClient,
     private readonly modelService: OllamaModelService,
     private readonly capacityPolicy: CapacityPolicy,
+    private readonly agentRuntime: AgentRuntime,
     private readonly getConfig: () => CollamdexConfig
   ) {}
 
@@ -68,8 +70,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   public cancel(): void {
     this.abortController?.abort();
     this.abortController = undefined;
+    this.agentRuntime.cancel();
     this.post({ type: "busy", value: false });
     this.post({ detail: "Operacion cancelada.", type: "activity-complete" });
+  }
+
+  public async runPrompt(prompt: string): Promise<void> {
+    this.post({ prompt, type: "user-message" });
+    await this.sendPrompt(prompt, this.modelService.getSelectedModelName() ?? "");
   }
 
   public async refreshModels(): Promise<void> {
@@ -119,30 +127,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async sendPrompt(prompt: string, modelName: string): Promise<void> {
-    const model = this.models.find((item) => item.name === modelName || item.model === modelName);
-
-    if (model) {
-      const decision = this.capacityPolicy.evaluate(model);
-
-      if (decision.status === "blocked") {
-        const answer = await vscode.window.showWarningMessage(
-          decision.message,
-          { modal: true },
-          "Usar bajo mi responsabilidad"
-        );
-
-        if (answer !== "Usar bajo mi responsabilidad") {
-          return;
-        }
-      }
+    if (modelName) {
+      await this.modelService.setSelectedModel(modelName);
     }
 
-    const config = this.getConfig();
-    const runController = new AbortController();
-    this.abortController = runController;
     this.post({ type: "busy", value: true });
     this.post({
-      detail: `Modelo ${modelName}. Preparando contexto y conexion local.`,
+      detail: `Modelo ${modelName || "seleccionado"}. Preparando contexto del proyecto.`,
       direction: "forward",
       phase: "Pensando",
       type: "activity"
@@ -150,54 +141,54 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: "assistant-start" });
 
     try {
-      const isHealthy = await this.client.healthCheck();
-
-      if (!isHealthy) {
-        throw new Error("Ollama no esta disponible. Inicia Ollama localmente.");
-      }
-
-      const result = await this.client.streamChat(
-        {
-          keep_alive: config.keepAlive,
-          messages: [
-            {
-              content: this.getSystemPrompt(),
-              role: "system"
-            },
-            {
-              content: prompt,
-              role: "user"
-            }
-          ],
-          model: modelName,
-          options: {
-            num_ctx: config.numCtx,
-            temperature: config.temperature
-          },
-          stream: true
+      const result = await this.agentRuntime.runTask(prompt, {
+        onComplete: ({ detail }) => {
+          this.post({ detail, type: "activity-complete" });
         },
-        (token) => this.post({ type: "assistant-token", token }),
-        runController.signal,
-        {
-          onFirstToken: (elapsedMs) => {
-            this.post({
-              detail: `Primer token en ${formatDuration(elapsedMs)}.`,
-              direction: "forward",
-              phase: "Respondiendo",
-              type: "activity"
-            });
-          },
-          onMetrics: (metrics) => {
-            this.post({
-              detail: formatMetrics(metrics.tokensPerSecond, metrics.evalCount),
-              direction: "forward",
-              phase: "Finalizando",
-              type: "activity"
-            });
-          }
-        }
-      );
-      this.post({ detail: formatChatResult(result), type: "activity-complete" });
+        onError: (message) => {
+          this.post({ type: "error", message });
+          this.post({ detail: message, type: "activity-complete" });
+        },
+        onProgress: ({ detail, direction, phase }) => {
+          this.post({
+            detail,
+            direction: direction ?? "forward",
+            phase,
+            type: "activity"
+          });
+        },
+        onStart: ({ detail }) => {
+          this.post({
+            detail,
+            direction: "forward",
+            phase: "Pensando",
+            type: "activity"
+          });
+        },
+        onToken: (token) => this.post({ type: "assistant-token", token })
+      });
+
+      if (result && this.agentRuntime.hasPatch(result.text)) {
+        const changes = this.agentRuntime.getPatchSummary(result.text);
+        this.post({
+          detail: "Patch detectado. Abriendo preview y confirmacion de aplicacion.",
+          direction: "forward",
+          phase: "Revisando patch",
+          type: "activity"
+        });
+        this.post({ changes, type: "patch-summary" });
+        const applyResult = await this.agentRuntime.showResult(result, {
+          openMarkdownWhenNoPatch: false,
+          preferPatch: true
+        });
+        const status = applyResult?.status ?? "preview";
+        const detail =
+          status === "applied"
+            ? `Patch aplicado: ${formatFileChangeCount(changes)}.`
+            : applyResult?.message ?? "Patch abierto en preview. No se aplicaron cambios.";
+        this.post({ detail, status, type: "patch-result" });
+        this.post({ detail, type: "activity-complete" });
+      }
     } catch (error) {
       const message =
         error instanceof Error && error.name === "AbortError"
@@ -208,9 +199,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.post({ type: "error", message });
       this.post({ detail: message, type: "activity-complete" });
     } finally {
-      if (this.abortController === runController) {
-        this.abortController = undefined;
-      }
       this.post({ type: "busy", value: false });
     }
   }
@@ -448,15 +436,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     void this.view?.webview.postMessage(message);
   }
 
-  private getSystemPrompt(): string {
-    return [
-      "Eres Collamdex, un agente local de codificacion para VS Code.",
-      "Usas Ollama local y no dependes de servicios externos.",
-      "Responde en espanol claro.",
-      "Cuando propongas cambios de codigo, devuelve un patch unificado si es posible.",
-      "No sugieras comandos destructivos."
-    ].join("\n");
-  }
 }
 
 function compactText(text: string, maxLength: number): string {
@@ -467,14 +446,6 @@ function compactText(text: string, maxLength: number): string {
   }
 
   return `${compacted.slice(0, maxLength - 3)}...`;
-}
-
-function formatChatResult(result: OllamaChatResult): string {
-  return [
-    `Primer token: ${formatDuration(result.firstTokenMs)}`,
-    `total: ${formatDuration(result.elapsedMs)}`,
-    formatMetrics(result.metrics?.tokensPerSecond, result.metrics?.evalCount)
-  ].join(" | ");
 }
 
 function formatDuration(ms: number | undefined): string {
@@ -502,6 +473,14 @@ function formatModelTest(test: ModelTestStatus): string {
   }
 
   return `${formatDuration(test.firstTokenMs)}/${formatDuration(test.elapsedMs)}`;
+}
+
+function formatFileChangeCount(changes: readonly unknown[]): string {
+  if (changes.length === 1) {
+    return "1 archivo";
+  }
+
+  return `${changes.length} archivos`;
 }
 
 function getModelKind(model: OllamaModel): string {

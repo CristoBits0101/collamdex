@@ -176,6 +176,55 @@ export function getChatViewHtml(webview: vscode.Webview, extensionUri: vscode.Ur
       gap: 8px;
     }
 
+    .file-changes {
+      display: grid;
+      gap: 4px;
+      max-height: 112px;
+      overflow: hidden;
+    }
+
+    .file-changes:empty {
+      display: none;
+    }
+
+    .file-change {
+      align-items: center;
+      animation: fileChangeIn 360ms ease both;
+      border-left: 2px solid var(--vscode-textLink-foreground);
+      display: grid;
+      gap: 6px;
+      grid-template-columns: auto minmax(0, 1fr) auto auto;
+      min-height: 22px;
+      padding: 2px 0 2px 6px;
+    }
+
+    .file-op {
+      color: var(--vscode-descriptionForeground);
+      font-size: 11px;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .file-path {
+      color: var(--vscode-textLink-foreground);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .file-count {
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .file-count.added {
+      color: var(--vscode-gitDecoration-addedResourceForeground, #3fb950);
+    }
+
+    .file-count.removed {
+      color: var(--vscode-gitDecoration-deletedResourceForeground, #f85149);
+    }
+
     .rolling-value {
       align-items: center;
       display: inline-flex;
@@ -263,6 +312,18 @@ export function getChatViewHtml(webview: vscode.Webview, extensionUri: vscode.Ur
         transform: scale(0.82);
       }
     }
+
+    @keyframes fileChangeIn {
+      0% {
+        opacity: 0;
+        transform: translateX(-8px);
+      }
+
+      100% {
+        opacity: 1;
+        transform: translateX(0);
+      }
+    }
   </style>
 </head>
 <body>
@@ -297,6 +358,7 @@ export function getChatViewHtml(webview: vscode.Webview, extensionUri: vscode.Ur
           <span>-</span><span id="removedCounter" class="rolling-value" aria-label="Lineas eliminadas"></span>
           <span id="tokenCounter">0 caracteres</span>
         </div>
+        <div id="fileChanges" class="file-changes" aria-label="Cambios por archivo"></div>
         <div class="progress-track">
           <div id="progressBar" class="progress-bar"></div>
         </div>
@@ -331,6 +393,7 @@ export function getChatViewHtml(webview: vscode.Webview, extensionUri: vscode.Ur
     const activityDetailEl = document.getElementById("activityDetail");
     const addedCounterEl = document.getElementById("addedCounter");
     const removedCounterEl = document.getElementById("removedCounter");
+    const fileChangesEl = document.getElementById("fileChanges");
     const tokenCounterEl = document.getElementById("tokenCounter");
     const progressBarEl = document.getElementById("progressBar");
     let assistantMessage;
@@ -380,6 +443,7 @@ export function getChatViewHtml(webview: vscode.Webview, extensionUri: vscode.Ur
       setRollingValue(activityClockEl, "00:00");
       setRollingValue(addedCounterEl, "000");
       setRollingValue(removedCounterEl, "000");
+      fileChangesEl.replaceChildren();
       tokenCounterEl.textContent = "0 caracteres";
       progressBarEl.style.width = "2%";
       clearInterval(activityTimer);
@@ -437,6 +501,62 @@ export function getChatViewHtml(webview: vscode.Webview, extensionUri: vscode.Ur
       setRollingValue(addedCounterEl, padNumber(added, 3));
       setRollingValue(removedCounterEl, padNumber(removed, 3));
       tokenCounterEl.textContent = receivedChars + " caracteres";
+    }
+
+    function renderPatchSummary(changes) {
+      fileChangesEl.replaceChildren();
+
+      if (!Array.isArray(changes) || changes.length === 0) {
+        return;
+      }
+
+      let added = 0;
+      let removed = 0;
+
+      changes.forEach((change, index) => {
+        added += Number(change.addedLines) || 0;
+        removed += Number(change.removedLines) || 0;
+
+        const row = document.createElement("div");
+        row.className = "file-change";
+        row.style.animationDelay = String(index * 90) + "ms";
+
+        const operationEl = document.createElement("span");
+        operationEl.className = "file-op";
+        operationEl.textContent = getOperationLabel(change.operation);
+
+        const pathEl = document.createElement("span");
+        pathEl.className = "file-path";
+        pathEl.textContent = change.path || "[archivo]";
+        pathEl.title = change.path || "";
+
+        const addedEl = document.createElement("span");
+        addedEl.className = "file-count added";
+        addedEl.textContent = "+" + String(Number(change.addedLines) || 0);
+
+        const removedEl = document.createElement("span");
+        removedEl.className = "file-count removed";
+        removedEl.textContent = "-" + String(Number(change.removedLines) || 0);
+
+        row.append(operationEl, pathEl, addedEl, removedEl);
+        fileChangesEl.append(row);
+      });
+
+      setRollingValue(addedCounterEl, padNumber(added, 3));
+      setRollingValue(removedCounterEl, padNumber(removed, 3));
+      tokenCounterEl.textContent = String(changes.length) + " archivo" + (changes.length === 1 ? "" : "s");
+    }
+
+    function getOperationLabel(operation) {
+      if (operation === "create") {
+        return "Creando";
+      }
+
+      if (operation === "delete") {
+        return "Eliminando";
+      }
+
+      return "Editando";
     }
 
     function setRollingValue(container, value) {
@@ -517,16 +637,35 @@ export function getChatViewHtml(webview: vscode.Webview, extensionUri: vscode.Ur
         renderState(message.state);
       }
 
+      if (message.type === "user-message") {
+        addMessage("Tu", message.prompt);
+      }
+
       if (message.type === "busy") {
         setBusy(message.value);
       }
 
       if (message.type === "activity") {
+        activityEl.classList.remove("complete");
         setActivity(message.phase, message.detail, message.direction);
       }
 
       if (message.type === "activity-complete") {
         completeActivity(message.detail);
+      }
+
+      if (message.type === "patch-summary") {
+        activityEl.classList.remove("complete");
+        setActivity("Aplicando patch", "Preparando cambios por archivo...", "forward");
+        renderPatchSummary(message.changes);
+      }
+
+      if (message.type === "patch-result") {
+        setActivity(
+          message.status === "applied" ? "Cambios aplicados" : "Patch en preview",
+          message.detail,
+          "forward"
+        );
       }
 
       if (message.type === "assistant-start") {

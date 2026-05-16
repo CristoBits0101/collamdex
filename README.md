@@ -60,6 +60,9 @@ Esto genera un `.vsix` instalable en VS Code.
 - Health check de Ollama.
 - Streaming de respuestas.
 - Indicador animado de pensamiento/respuesta con reloj y contadores de lineas `+`/`-`.
+- Ejecucion de tareas del agente desde el panel lateral con estado visible mientras trabaja.
+- Preview de patches detectados y aplicacion con confirmacion mediante `git apply`.
+- Animacion por archivo para patches: creando, editando o eliminando con ruta azul y contadores verdes/rojos.
 - Prueba de modelos Ollama contra el contexto real del proyecto con medicion de primer token, total y tokens/segundo.
 - Cancelacion de generacion.
 - Comandos de editor:

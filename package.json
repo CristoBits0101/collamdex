@@ -2,7 +2,7 @@
   "name": "collamdex",
   "displayName": "Collamdex",
   "description": "Agente de codificacion local-first para VS Code con Ollama.",
-  "version": "0.1.2",
+  "version": "0.1.4",
   "publisher": "reuda",
   "license": "MIT",
   "icon": "media/collamdex.png",

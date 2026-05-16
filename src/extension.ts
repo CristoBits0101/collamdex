@@ -32,6 +32,7 @@ export function activate(context: vscode.ExtensionContext): void {
     client,
     modelService,
     capacityPolicy,
+    agentRuntime,
     getConfig
   );
 
