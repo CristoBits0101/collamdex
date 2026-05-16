@@ -87,9 +87,9 @@ export class AgentRuntime {
     } = {}
   ): Promise<PatchApplyResult | undefined> {
     const title = `Collamdex - ${result.model}`;
-    const containsPatch = this.patchPreviewService.hasPatch(result.text);
+    const containsApplicableChanges = this.patchPreviewService.hasApplicableChanges(result.text);
 
-    if (containsPatch) {
+    if (containsApplicableChanges) {
       const applyResult = await this.patchPreviewService.showPatchAndOfferApply(
         title,
         result.text,
@@ -377,8 +377,10 @@ export class AgentRuntime {
       case "task":
         return [
           options.task ?? "Resuelve la tarea indicada por el usuario.",
-          "Si la tarea requiere modificar archivos, devuelve un diff unificado aplicable con git apply.",
-          "Para crear, reescribir o eliminar archivos completos puedes devolver un bloque JSON ```collamdex-files``` con operation, path y content.",
+          "Si la tarea requiere modificar archivos existentes, devuelve un diff unificado aplicable con git apply.",
+          "Si la tarea requiere crear, reescribir o eliminar archivos completos, devuelve obligatoriamente un bloque JSON ```collamdex-files``` con operation, path y content.",
+          "Ejemplo para crear un archivo: ```collamdex-files\n[{\"operation\":\"create\",\"path\":\"README-2.md\",\"content\":\"# README-2.md\\nContenido\\n\"}]\n```",
+          "No devuelvas solo el contenido Markdown de un archivo nuevo fuera de un formato aplicable.",
           "No digas que has escrito archivos si solo estas proponiendo cambios; Collamdex pedira confirmacion antes de aplicar.",
           "No uses placeholders cuando el dato solicitado aparezca en el contexto del workspace."
         ].join("\n");
@@ -392,7 +394,7 @@ export class AgentRuntime {
       "Responde en espanol cuando expliques, pero conserva codigo, APIs y errores en su idioma original.",
       "No inventes contenido de archivos existentes que no aparezca en el contexto.",
       "Si propones cambios, devuelve un resumen breve y un patch unificado aplicable.",
-      "Si necesitas crear, reescribir o eliminar archivos completos, puedes usar un bloque ```collamdex-files``` con JSON valido.",
+      "Si necesitas crear, reescribir o eliminar archivos completos, usa un bloque ```collamdex-files``` con JSON valido; no respondas solo con Markdown del archivo.",
       "No pidas ejecutar comandos destructivos.",
       "Cualquier escritura o comando de terminal requiere confirmacion del usuario."
     ].join("\n");

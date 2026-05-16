@@ -13,6 +13,9 @@ type ProposedChangeKind = "file-operations" | "patch";
 type WorkspaceFileWriteOperation = "create" | "edit" | "write";
 type WorkspaceFileOperationKind = "delete" | WorkspaceFileWriteOperation;
 
+const relativeFilePathPattern =
+  /(?:^|[\s`"':(])((?:[A-Za-z0-9_.-]+[\\/])*[A-Za-z0-9_.-]+\.[A-Za-z0-9][A-Za-z0-9_-]{0,15})(?=$|[\s`"',:.)\]])/g;
+
 export interface PatchApplyResult {
   readonly changes: readonly PatchFileChange[];
   readonly message: string;
@@ -354,7 +357,230 @@ function extractWorkspaceFileOperations(content: string): readonly WorkspaceFile
     }
   }
 
+  if (operations.length === 0) {
+    const plainMarkdownOperation = extractPlainMarkdownFileOperation(content);
+    if (plainMarkdownOperation) {
+      operations.push(plainMarkdownOperation);
+    }
+  }
+
   return operations;
+}
+
+function extractPlainMarkdownFileOperation(content: string): WorkspaceFileOperation | undefined {
+  const intent = extractPlainFileIntent(content);
+
+  if (!intent || !isMarkdownPath(intent.path)) {
+    return undefined;
+  }
+
+  const markdownContent = extractMarkdownDocumentForPath(content, intent.path);
+
+  if (!markdownContent) {
+    return undefined;
+  }
+
+  return {
+    content: markdownContent,
+    operation: intent.operation,
+    path: intent.path
+  };
+}
+
+function extractPlainFileIntent(
+  content: string
+): { readonly operation: WorkspaceFileWriteOperation; readonly path: string } | undefined {
+  const lines = content.split(/\r?\n/).slice(0, 40);
+
+  for (const line of lines) {
+    if (!hasFileWriteIntent(line)) {
+      continue;
+    }
+
+    const pathCandidate = extractFirstRelativePathCandidate(line);
+
+    if (!pathCandidate) {
+      continue;
+    }
+
+    return {
+      operation: inferPlainFileOperation(line),
+      path: pathCandidate
+    };
+  }
+
+  return extractMarkdownHeadingFileIntent(content);
+}
+
+function hasFileWriteIntent(value: string): boolean {
+  return /\b(crea|crear|cree|genera|generar|escribe|escribir|anade|agrega|modifica|actualiza|edita|create|write|generate|add|modify|update|edit)\b/.test(
+    normalizeForSearch(value)
+  );
+}
+
+function inferPlainFileOperation(value: string): WorkspaceFileWriteOperation {
+  const normalized = normalizeForSearch(value);
+
+  if (/\b(crea|crear|cree|genera|generar|nuevo|nueva|create|generate|new)\b/.test(normalized)) {
+    return "create";
+  }
+
+  if (/\b(modifica|actualiza|edita|modify|update|edit)\b/.test(normalized)) {
+    return "edit";
+  }
+
+  return "write";
+}
+
+function extractFirstRelativePathCandidate(value: string): string | undefined {
+  relativeFilePathPattern.lastIndex = 0;
+  let match = relativeFilePathPattern.exec(value);
+
+  while (match) {
+    const candidate = sanitizePathCandidate(match[1] ?? "");
+
+    if (candidate && isSafeRelativePathCandidate(candidate)) {
+      return candidate;
+    }
+
+    match = relativeFilePathPattern.exec(value);
+  }
+
+  return undefined;
+}
+
+function extractMarkdownHeadingFileIntent(
+  content: string
+): { readonly operation: WorkspaceFileWriteOperation; readonly path: string } | undefined {
+  const lines = content.split(/\r?\n/).slice(0, 40);
+
+  for (const line of lines) {
+    const match = /^#{1,2}\s+(.+?)\s*#*\s*$/.exec(line.trim());
+
+    if (!match) {
+      continue;
+    }
+
+    const pathCandidate = extractFirstRelativePathCandidate(match[1] ?? "");
+
+    if (pathCandidate && isSafeRelativePathCandidate(pathCandidate) && isMarkdownPath(pathCandidate)) {
+      return {
+        operation: "create",
+        path: pathCandidate
+      };
+    }
+  }
+
+  return undefined;
+}
+
+function sanitizePathCandidate(value: string): string {
+  return value.replace(/^[`"'(<[]+/, "").replace(/[`"'),.;:\]]+$/, "").trim();
+}
+
+function isSafeRelativePathCandidate(value: string): boolean {
+  const normalized = value.replace(/\\/g, "/");
+
+  return (
+    normalized.length > 0 &&
+    !normalized.includes("\0") &&
+    !path.isAbsolute(normalized) &&
+    !path.win32.isAbsolute(normalized) &&
+    normalized.split("/").every((segment) => segment.length > 0 && segment !== "..")
+  );
+}
+
+function isMarkdownPath(value: string): boolean {
+  const extension = path.posix.extname(value.replace(/\\/g, "/")).toLowerCase();
+  return extension === ".md" || extension === ".markdown";
+}
+
+function extractMarkdownDocumentForPath(content: string, targetPath: string): string | undefined {
+  const fencedContent = extractMarkdownFenceForPath(content, targetPath);
+
+  if (fencedContent) {
+    return fencedContent;
+  }
+
+  const lines = content.split(/\r?\n/);
+  const headingIndex = lines.findIndex((line) => isFileTitleHeading(line, targetPath));
+
+  if (headingIndex < 0) {
+    return undefined;
+  }
+
+  const markdownContent = lines.slice(headingIndex).join("\n").trimEnd();
+  return markdownContent.trim().length > 0 ? ensureTrailingNewline(markdownContent) : undefined;
+}
+
+function extractMarkdownFenceForPath(content: string, targetPath: string): string | undefined {
+  const fencedBlocks = content.matchAll(/```([A-Za-z0-9_-]*)[^\n]*\r?\n([\s\S]*?)```/g);
+
+  for (const match of fencedBlocks) {
+    const language = (match[1] ?? "").toLowerCase();
+
+    if (!isMarkdownFenceLanguage(language)) {
+      continue;
+    }
+
+    const blockStart = match.index ?? 0;
+    const previousText = content.slice(Math.max(0, blockStart - 300), blockStart);
+
+    if (!mentionsPath(previousText, targetPath)) {
+      continue;
+    }
+
+    const raw = match[2]?.trimEnd();
+
+    if (raw && raw.trim().length > 0) {
+      return ensureTrailingNewline(raw);
+    }
+  }
+
+  return undefined;
+}
+
+function isMarkdownFenceLanguage(value: string): boolean {
+  return value.length === 0 || value === "md" || value === "markdown";
+}
+
+function mentionsPath(value: string, targetPath: string): boolean {
+  const normalizedValue = normalizePathMention(value);
+  const normalizedTarget = normalizePathMention(targetPath);
+  const targetBaseName = path.posix.basename(normalizedTarget);
+
+  return normalizedValue.includes(normalizedTarget) || normalizedValue.includes(targetBaseName);
+}
+
+function isFileTitleHeading(line: string, targetPath: string): boolean {
+  const match = /^#{1,2}\s+(.+?)\s*#*\s*$/.exec(line.trim());
+
+  if (!match) {
+    return false;
+  }
+
+  const title = normalizeHeadingTitle(match[1] ?? "");
+  const normalizedPath = normalizePathMention(targetPath);
+  const baseName = path.posix.basename(normalizedPath);
+  const extension = path.posix.extname(baseName);
+  const stem = extension ? baseName.slice(0, -extension.length) : baseName;
+
+  return title === baseName || title === stem;
+}
+
+function normalizeHeadingTitle(value: string): string {
+  return normalizePathMention(value.replace(/[`"'()]/g, "").trim());
+}
+
+function normalizePathMention(value: string): string {
+  return value.replace(/\\/g, "/").toLowerCase();
+}
+
+function normalizeForSearch(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
 }
 
 function normalizeToolCall(value: unknown): readonly WorkspaceFileOperation[] {
