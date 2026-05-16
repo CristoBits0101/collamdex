@@ -52,8 +52,14 @@ export interface OllamaChatRequest {
 
 export interface OllamaChatStreamChunk {
   readonly done?: boolean;
+  readonly eval_count?: number;
+  readonly eval_duration?: number;
+  readonly load_duration?: number;
   readonly message?: {
     readonly content?: string;
     readonly role?: string;
   };
+  readonly prompt_eval_count?: number;
+  readonly prompt_eval_duration?: number;
+  readonly total_duration?: number;
 }

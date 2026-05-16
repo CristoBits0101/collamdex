@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 
 import { CapacityPolicy } from "../capacity/capacity-policy.js";
 import type { CollamdexConfig } from "../config/extension-config.js";
-import { OllamaClient } from "../ollama/ollama-client.js";
+import { OllamaClient, type OllamaChatResult } from "../ollama/ollama-client.js";
 import { OllamaModelService } from "../ollama/ollama-model-service.js";
 import { getActiveEditorContext } from "../workspace/active-editor-context.js";
 import { getDiagnosticsContext } from "../workspace/diagnostics-context.js";
@@ -97,10 +97,11 @@ export class AgentRuntime {
         location: vscode.ProgressLocation.Notification,
         title: "Collamdex esta trabajando"
       },
-      async (_progress, token) => {
+      async (progress, token) => {
         token.onCancellationRequested(() => this.cancel());
+        progress.report({ message: "Preparando contexto del proyecto..." });
 
-        await this.client.streamChat(
+        const result = await this.client.streamChat(
           {
             keep_alive: config.keepAlive,
             messages: [
@@ -124,8 +125,22 @@ export class AgentRuntime {
             text += chunk;
             this.outputChannel.append(chunk);
           },
-          this.abortController?.signal
+          this.abortController?.signal,
+          {
+            onFirstToken: (elapsedMs) => {
+              progress.report({ message: `Primer token en ${formatDuration(elapsedMs)}.` });
+              this.outputChannel.appendLine("");
+              this.outputChannel.appendLine(`[Primer token: ${formatDuration(elapsedMs)}]`);
+            },
+            onMetrics: (metrics) => {
+              progress.report({
+                message: formatMetrics(metrics.tokensPerSecond, metrics.evalCount)
+              });
+            }
+          }
         );
+        this.outputChannel.appendLine("");
+        this.outputChannel.appendLine(`[Resumen: ${formatChatResult(result)}]`);
       }
     );
 
@@ -205,4 +220,31 @@ export class AgentRuntime {
       "Cualquier escritura o comando de terminal requiere confirmacion del usuario."
     ].join("\n");
   }
+}
+
+function formatChatResult(result: OllamaChatResult): string {
+  return [
+    `primer token ${formatDuration(result.firstTokenMs)}`,
+    `total ${formatDuration(result.elapsedMs)}`,
+    formatMetrics(result.metrics?.tokensPerSecond, result.metrics?.evalCount)
+  ].join(" | ");
+}
+
+function formatDuration(ms: number | undefined): string {
+  if (ms === undefined) {
+    return "n/d";
+  }
+
+  if (ms < 1000) {
+    return `${ms} ms`;
+  }
+
+  return `${(ms / 1000).toFixed(1)} s`;
+}
+
+function formatMetrics(tokensPerSecond: number | undefined, evalCount: number | undefined): string {
+  const speed =
+    tokensPerSecond === undefined ? "velocidad n/d" : `${tokensPerSecond.toFixed(1)} tok/s`;
+  const tokens = evalCount === undefined ? "tokens n/d" : `${evalCount} tokens`;
+  return `${speed}, ${tokens}`;
 }

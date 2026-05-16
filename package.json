@@ -2,7 +2,7 @@
   "name": "collamdex",
   "displayName": "Collamdex",
   "description": "Agente de codificacion local-first para VS Code con Ollama.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "reuda",
   "license": "MIT",
   "icon": "media/collamdex.png",
@@ -61,6 +61,11 @@
       {
         "command": "collamdex.refreshModels",
         "title": "Refrescar modelos de Ollama",
+        "category": "Collamdex"
+      },
+      {
+        "command": "collamdex.testOllamaModels",
+        "title": "Probar modelos de Ollama",
         "category": "Collamdex"
       },
       {
@@ -180,6 +185,11 @@
         {
           "command": "collamdex.refreshModels",
           "group": "navigation@2",
+          "when": "view == collamdex.chatView"
+        },
+        {
+          "command": "collamdex.testOllamaModels",
+          "group": "navigation@3",
           "when": "view == collamdex.chatView"
         }
       ]

@@ -8,6 +8,27 @@ import type {
   OllamaTagsResponse
 } from "./ollama-types.js";
 
+export interface OllamaChatResult {
+  readonly elapsedMs: number;
+  readonly firstTokenMs?: number;
+  readonly metrics?: OllamaChatMetrics;
+}
+
+export interface OllamaChatMetrics {
+  readonly evalCount?: number;
+  readonly evalDurationMs?: number;
+  readonly loadDurationMs?: number;
+  readonly promptEvalCount?: number;
+  readonly promptEvalDurationMs?: number;
+  readonly tokensPerSecond?: number;
+  readonly totalDurationMs?: number;
+}
+
+export interface OllamaStreamEvents {
+  readonly onFirstToken?: (elapsedMs: number) => void;
+  readonly onMetrics?: (metrics: OllamaChatMetrics) => void;
+}
+
 export class OllamaConnectionError extends Error {
   public constructor(message: string) {
     super(message);
@@ -43,8 +64,11 @@ export class OllamaClient {
   public async streamChat(
     request: OllamaChatRequest,
     onToken: (token: string) => void,
-    signal?: AbortSignal
-  ): Promise<void> {
+    signal?: AbortSignal,
+    events?: OllamaStreamEvents
+  ): Promise<OllamaChatResult> {
+    const startedAt = Date.now();
+    let firstTokenMs: number | undefined;
     const response = await fetch(`${this.getConfig().baseUrl}/chat`, {
       body: JSON.stringify(request),
       headers: {
@@ -63,7 +87,30 @@ export class OllamaClient {
       throw new OllamaConnectionError("Ollama no devolvio stream de respuesta.");
     }
 
-    await this.readNdjsonStream(response.body, onToken);
+    const metrics = await this.readNdjsonStream(
+      response.body,
+      (token) => {
+        if (firstTokenMs === undefined) {
+          firstTokenMs = Date.now() - startedAt;
+          events?.onFirstToken?.(firstTokenMs);
+        }
+
+        onToken(token);
+      },
+      (chunk) => {
+        const chunkMetrics = getChunkMetrics(chunk);
+
+        if (chunkMetrics) {
+          events?.onMetrics?.(chunkMetrics);
+        }
+      }
+    );
+
+    return {
+      elapsedMs: Date.now() - startedAt,
+      firstTokenMs,
+      metrics
+    };
   }
 
   private async fetchJson<T>(path: string): Promise<T> {
@@ -89,11 +136,13 @@ export class OllamaClient {
 
   private async readNdjsonStream(
     body: ReadableStream<Uint8Array>,
-    onToken: (token: string) => void
-  ): Promise<void> {
+    onToken: (token: string) => void,
+    onChunk: (chunk: OllamaChatStreamChunk) => void
+  ): Promise<OllamaChatMetrics | undefined> {
     const decoder = new TextDecoder();
     const reader = body.getReader();
     let buffer = "";
+    let metrics: OllamaChatMetrics | undefined;
 
     for (;;) {
       const result = await reader.read();
@@ -107,27 +156,64 @@ export class OllamaClient {
       buffer = lines.pop() ?? "";
 
       for (const line of lines) {
-        this.consumeStreamLine(line, onToken);
+        metrics = this.consumeStreamLine(line, onToken, onChunk) ?? metrics;
       }
     }
 
     if (buffer.trim().length > 0) {
-      this.consumeStreamLine(buffer, onToken);
+      metrics = this.consumeStreamLine(buffer, onToken, onChunk) ?? metrics;
     }
+
+    return metrics;
   }
 
-  private consumeStreamLine(line: string, onToken: (token: string) => void): void {
+  private consumeStreamLine(
+    line: string,
+    onToken: (token: string) => void,
+    onChunk: (chunk: OllamaChatStreamChunk) => void
+  ): OllamaChatMetrics | undefined {
     const trimmed = line.trim();
 
     if (trimmed.length === 0) {
-      return;
+      return undefined;
     }
 
     const chunk = JSON.parse(trimmed) as OllamaChatStreamChunk;
+    onChunk(chunk);
+
     const content = chunk.message?.content;
 
     if (content) {
       onToken(content);
     }
+
+    return getChunkMetrics(chunk);
   }
+}
+
+function getChunkMetrics(chunk: OllamaChatStreamChunk): OllamaChatMetrics | undefined {
+  if (!chunk.done) {
+    return undefined;
+  }
+
+  const evalDurationMs = nanosToMs(chunk.eval_duration);
+  const evalCount = chunk.eval_count;
+  const tokensPerSecond =
+    evalCount !== undefined && evalDurationMs !== undefined && evalDurationMs > 0
+      ? evalCount / (evalDurationMs / 1000)
+      : undefined;
+
+  return {
+    evalCount,
+    evalDurationMs,
+    loadDurationMs: nanosToMs(chunk.load_duration),
+    promptEvalCount: chunk.prompt_eval_count,
+    promptEvalDurationMs: nanosToMs(chunk.prompt_eval_duration),
+    tokensPerSecond,
+    totalDurationMs: nanosToMs(chunk.total_duration)
+  };
+}
+
+function nanosToMs(value: number | undefined): number | undefined {
+  return value === undefined ? undefined : Math.round(value / 1_000_000);
 }

@@ -59,6 +59,8 @@ Esto genera un `.vsix` instalable en VS Code.
 - Selector visible en la barra de estado: `Collamdex: <modelo>`.
 - Health check de Ollama.
 - Streaming de respuestas.
+- Indicador animado de pensamiento/respuesta con reloj y contadores de lineas `+`/`-`.
+- Prueba de modelos Ollama contra el contexto real del proyecto con medicion de primer token, total y tokens/segundo.
 - Cancelacion de generacion.
 - Comandos de editor:
   - explicar seleccion,
@@ -66,6 +68,8 @@ Esto genera un `.vsix` instalable en VS Code.
   - generar tests,
   - revisar archivo activo,
   - ejecutar tarea del agente.
+- Comando de diagnostico:
+  - probar modelos de Ollama.
 - Control conservador de capacidad segun RAM y tamano real del modelo.
 
 ## Ubicacion del chat

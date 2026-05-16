@@ -29,7 +29,7 @@ export function getChatViewHtml(webview: vscode.Webview, extensionUri: vscode.Ur
     .app {
       display: grid;
       gap: 12px;
-      grid-template-rows: auto auto 1fr auto;
+      grid-template-rows: auto auto auto 1fr auto;
       height: 100vh;
       padding: 12px;
       box-sizing: border-box;
@@ -108,6 +108,121 @@ export function getChatViewHtml(webview: vscode.Webview, extensionUri: vscode.Ur
       grid-template-columns: 1fr 1fr;
     }
 
+    .actions.three {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .activity {
+      align-items: center;
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 6px;
+      display: grid;
+      gap: 10px;
+      grid-template-columns: auto 1fr;
+      min-height: 58px;
+      padding: 8px;
+    }
+
+    .activity.is-hidden {
+      display: none;
+    }
+
+    .activity-pulse {
+      animation: pulse 1s ease-in-out infinite;
+      background: var(--vscode-progressBar-background);
+      border-radius: 999px;
+      height: 10px;
+      width: 10px;
+    }
+
+    .activity.complete .activity-pulse {
+      animation: none;
+      opacity: 0.7;
+    }
+
+    .activity-main {
+      display: grid;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .activity-top {
+      align-items: baseline;
+      display: flex;
+      gap: 8px;
+      justify-content: space-between;
+      min-width: 0;
+    }
+
+    .activity-phase {
+      font-weight: 700;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .activity-detail {
+      color: var(--vscode-descriptionForeground);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+
+    .activity-meters {
+      align-items: center;
+      color: var(--vscode-descriptionForeground);
+      display: flex;
+      flex-wrap: wrap;
+      font-size: 12px;
+      gap: 8px;
+    }
+
+    .rolling-value {
+      align-items: center;
+      display: inline-flex;
+      font-variant-numeric: tabular-nums;
+      gap: 1px;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    .digit-window {
+      display: inline-block;
+      height: 1.15em;
+      overflow: hidden;
+      width: 0.68em;
+    }
+
+    .digit-stack {
+      display: grid;
+      transform: translateY(calc(var(--digit, 0) * -1.15em));
+      transition: transform 220ms ease;
+    }
+
+    .static-char {
+      display: inline-block;
+      min-width: 0.35em;
+      text-align: center;
+    }
+
+    .progress-track {
+      background: var(--vscode-scrollbarSlider-background);
+      border-radius: 999px;
+      height: 3px;
+      overflow: hidden;
+    }
+
+    .progress-bar {
+      background: var(--vscode-progressBar-background);
+      height: 100%;
+      transform-origin: left center;
+      transition: width 260ms ease;
+      width: 0%;
+    }
+
+    .activity.reverse .progress-bar {
+      transform-origin: right center;
+    }
+
     .messages {
       border: 1px solid var(--vscode-panel-border);
       border-radius: 6px;
@@ -131,6 +246,23 @@ export function getChatViewHtml(webview: vscode.Webview, extensionUri: vscode.Ur
       margin-bottom: 4px;
       text-transform: uppercase;
     }
+
+    @keyframes pulse {
+      0% {
+        opacity: 0.35;
+        transform: scale(0.82);
+      }
+
+      50% {
+        opacity: 1;
+        transform: scale(1.2);
+      }
+
+      100% {
+        opacity: 0.35;
+        transform: scale(0.82);
+      }
+    }
   </style>
 </head>
 <body>
@@ -145,9 +277,29 @@ export function getChatViewHtml(webview: vscode.Webview, extensionUri: vscode.Ur
 
     <section class="controls">
       <select id="modelSelect" aria-label="Modelo Ollama"></select>
-      <div class="actions">
+      <div class="actions three">
         <button id="refreshButton" class="secondary">Refrescar</button>
         <button id="selectButton" class="secondary">Quick Pick</button>
+        <button id="testButton" class="secondary">Probar</button>
+      </div>
+    </section>
+
+    <section id="activity" class="activity is-hidden" aria-live="polite">
+      <div class="activity-pulse"></div>
+      <div class="activity-main">
+        <div class="activity-top">
+          <div id="activityPhase" class="activity-phase">Pensando</div>
+          <div id="activityClock" class="rolling-value" aria-label="Tiempo transcurrido"></div>
+        </div>
+        <div id="activityDetail" class="activity-detail">Preparando modelo...</div>
+        <div class="activity-meters">
+          <span>+</span><span id="addedCounter" class="rolling-value" aria-label="Lineas agregadas"></span>
+          <span>-</span><span id="removedCounter" class="rolling-value" aria-label="Lineas eliminadas"></span>
+          <span id="tokenCounter">0 caracteres</span>
+        </div>
+        <div class="progress-track">
+          <div id="progressBar" class="progress-bar"></div>
+        </div>
       </div>
     </section>
 
@@ -172,7 +324,20 @@ export function getChatViewHtml(webview: vscode.Webview, extensionUri: vscode.Ur
     const cancelButton = document.getElementById("cancelButton");
     const refreshButton = document.getElementById("refreshButton");
     const selectButton = document.getElementById("selectButton");
+    const testButton = document.getElementById("testButton");
+    const activityEl = document.getElementById("activity");
+    const activityPhaseEl = document.getElementById("activityPhase");
+    const activityClockEl = document.getElementById("activityClock");
+    const activityDetailEl = document.getElementById("activityDetail");
+    const addedCounterEl = document.getElementById("addedCounter");
+    const removedCounterEl = document.getElementById("removedCounter");
+    const tokenCounterEl = document.getElementById("tokenCounter");
+    const progressBarEl = document.getElementById("progressBar");
     let assistantMessage;
+    let assistantText = "";
+    let activityStartedAt = 0;
+    let activityTimer;
+    let receivedChars = 0;
 
     function addMessage(role, text) {
       const wrapper = document.createElement("article");
@@ -192,7 +357,144 @@ export function getChatViewHtml(webview: vscode.Webview, extensionUri: vscode.Ur
       sendButton.disabled = isBusy;
       refreshButton.disabled = isBusy;
       selectButton.disabled = isBusy;
+      testButton.disabled = isBusy;
       modelSelect.disabled = isBusy;
+      cancelButton.disabled = !isBusy;
+
+      if (isBusy) {
+        startActivity("Pensando", "Esperando a Ollama...", "forward");
+      }
+    }
+
+    function startActivity(phase, detail, direction) {
+      activityEl.classList.remove("is-hidden", "complete", "reverse");
+
+      if (direction === "reverse") {
+        activityEl.classList.add("reverse");
+      }
+
+      activityStartedAt = Date.now();
+      receivedChars = 0;
+      assistantText = "";
+      setActivity(phase, detail, direction);
+      setRollingValue(activityClockEl, "00:00");
+      setRollingValue(addedCounterEl, "000");
+      setRollingValue(removedCounterEl, "000");
+      tokenCounterEl.textContent = "0 caracteres";
+      progressBarEl.style.width = "2%";
+      clearInterval(activityTimer);
+      activityTimer = setInterval(updateActivityClock, 1000);
+      updateActivityClock();
+    }
+
+    function setActivity(phase, detail, direction) {
+      activityPhaseEl.textContent = phase || "Pensando";
+      activityDetailEl.textContent = detail || "";
+
+      activityEl.classList.toggle("reverse", direction === "reverse");
+    }
+
+    function completeActivity(detail) {
+      clearInterval(activityTimer);
+      activityTimer = undefined;
+      activityEl.classList.add("complete");
+      setActivity("Listo", detail || "Respuesta completada.", "forward");
+      progressBarEl.style.width = "100%";
+    }
+
+    function updateActivityClock() {
+      if (!activityStartedAt) {
+        return;
+      }
+
+      const elapsedSeconds = Math.max(0, Math.floor((Date.now() - activityStartedAt) / 1000));
+      const minutes = Math.floor(elapsedSeconds / 60);
+      const seconds = elapsedSeconds % 60;
+      setRollingValue(activityClockEl, padNumber(minutes, 2) + ":" + padNumber(seconds, 2));
+
+      const cycle = elapsedSeconds % 24;
+      const width = activityEl.classList.contains("reverse")
+        ? 100 - Math.round((cycle / 24) * 92)
+        : 8 + Math.round((cycle / 24) * 90);
+      progressBarEl.style.width = Math.max(8, Math.min(98, width)) + "%";
+    }
+
+    function updateChangeStats(text) {
+      let added = 0;
+      let removed = 0;
+      const lines = text.split("\\n");
+
+      for (const line of lines) {
+        if (line.startsWith("+") && !line.startsWith("+++")) {
+          added += 1;
+        }
+
+        if (line.startsWith("-") && !line.startsWith("---")) {
+          removed += 1;
+        }
+      }
+
+      setRollingValue(addedCounterEl, padNumber(added, 3));
+      setRollingValue(removedCounterEl, padNumber(removed, 3));
+      tokenCounterEl.textContent = receivedChars + " caracteres";
+    }
+
+    function setRollingValue(container, value) {
+      const text = String(value);
+
+      if (container._rollingTextLength !== text.length) {
+        const cells = [];
+        container.replaceChildren();
+
+        for (const char of text) {
+          if (/\\d/.test(char)) {
+            const windowEl = document.createElement("span");
+            const stackEl = document.createElement("span");
+            windowEl.className = "digit-window";
+            stackEl.className = "digit-stack";
+
+            for (let index = 0; index <= 9; index += 1) {
+              const numberEl = document.createElement("span");
+              numberEl.textContent = String(index);
+              stackEl.append(numberEl);
+            }
+
+            windowEl.append(stackEl);
+            container.append(windowEl);
+            cells.push({ type: "digit", stackEl });
+          } else {
+            const staticEl = document.createElement("span");
+            staticEl.className = "static-char";
+            staticEl.textContent = char;
+            container.append(staticEl);
+            cells.push({ type: "static", staticEl });
+          }
+        }
+
+        container._rollingCells = cells;
+        container._rollingTextLength = text.length;
+      }
+
+      const cells = container._rollingCells || [];
+
+      for (let index = 0; index < text.length; index += 1) {
+        const char = text[index];
+        const cell = cells[index];
+
+        if (!cell) {
+          continue;
+        }
+
+        if (cell.type === "digit") {
+          cell.stackEl.style.setProperty("--digit", char);
+        } else {
+          cell.staticEl.textContent = char;
+        }
+      }
+    }
+
+    function padNumber(value, size) {
+      return String(value).padStart(size, "0");
     }
 
     function renderState(state) {
@@ -219,13 +521,31 @@ export function getChatViewHtml(webview: vscode.Webview, extensionUri: vscode.Ur
         setBusy(message.value);
       }
 
+      if (message.type === "activity") {
+        setActivity(message.phase, message.detail, message.direction);
+      }
+
+      if (message.type === "activity-complete") {
+        completeActivity(message.detail);
+      }
+
       if (message.type === "assistant-start") {
+        assistantText = "";
+        receivedChars = 0;
         assistantMessage = addMessage("Collamdex", "");
       }
 
       if (message.type === "assistant-token" && assistantMessage) {
+        assistantText += message.token;
+        receivedChars += message.token.length;
         assistantMessage.textContent += message.token;
+        setActivity("Respondiendo", "Recibiendo tokens del modelo...", "forward");
+        updateChangeStats(assistantText);
         messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+
+      if (message.type === "model-test-result") {
+        addMessage("Prueba Ollama", message.summary);
       }
 
       if (message.type === "error") {
@@ -253,6 +573,10 @@ export function getChatViewHtml(webview: vscode.Webview, extensionUri: vscode.Ur
       vscode.postMessage({ type: "refreshModels" });
     });
 
+    testButton.addEventListener("click", () => {
+      vscode.postMessage({ type: "testModels" });
+    });
+
     selectButton.addEventListener("click", () => {
       vscode.postMessage({ type: "selectModel" });
     });
@@ -262,6 +586,10 @@ export function getChatViewHtml(webview: vscode.Webview, extensionUri: vscode.Ur
     });
 
     vscode.postMessage({ type: "ready" });
+    cancelButton.disabled = true;
+    setRollingValue(activityClockEl, "00:00");
+    setRollingValue(addedCounterEl, "000");
+    setRollingValue(removedCounterEl, "000");
   </script>
 </body>
 </html>`;

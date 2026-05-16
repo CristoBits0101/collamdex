@@ -28,6 +28,10 @@ export function registerCommands(
     vscode.commands.registerCommand("collamdex.refreshModels", async () => {
       await dependencies.chatViewProvider.refreshModels();
     }),
+    vscode.commands.registerCommand("collamdex.testOllamaModels", async () => {
+      await openCollamdexView();
+      await dependencies.chatViewProvider.testModels();
+    }),
     vscode.commands.registerCommand("collamdex.explainSelection", async () => {
       await dependencies.agentRuntime.runEditorAction("explain");
     }),
