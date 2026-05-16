@@ -9,6 +9,9 @@ const execFileAsync = promisify(execFile);
 
 export type PatchApplyStatus = "applied" | "failed" | "invalid" | "no-workspace" | "preview";
 export type PatchFileOperation = "create" | "delete" | "edit";
+type ProposedChangeKind = "file-operations" | "patch";
+type WorkspaceFileWriteOperation = "create" | "edit" | "write";
+type WorkspaceFileOperationKind = "delete" | WorkspaceFileWriteOperation;
 
 export interface PatchApplyResult {
   readonly changes: readonly PatchFileChange[];
@@ -23,14 +26,36 @@ export interface PatchFileChange {
   readonly removedLines: number;
 }
 
+interface ProposedWorkspaceChange {
+  readonly changes: readonly PatchFileChange[];
+  readonly content: string;
+  readonly fileOperations?: readonly WorkspaceFileOperation[];
+  readonly kind: ProposedChangeKind;
+  readonly language: "diff" | "json";
+}
+
+interface WorkspaceFileOperation {
+  readonly content?: string;
+  readonly operation: WorkspaceFileOperationKind;
+  readonly path: string;
+}
+
 export class PatchPreviewService {
   public hasPatch(content: string): boolean {
     return extractUnifiedDiff(content) !== undefined;
   }
 
+  public hasApplicableChanges(content: string): boolean {
+    return extractProposedWorkspaceChange(content) !== undefined;
+  }
+
   public getPatchSummary(content: string): readonly PatchFileChange[] {
     const patch = extractUnifiedDiff(content);
     return patch ? summarizePatch(patch) : [];
+  }
+
+  public getChangeSummary(content: string): readonly PatchFileChange[] {
+    return extractProposedWorkspaceChange(content)?.changes ?? [];
   }
 
   public async showMarkdown(title: string, content: string): Promise<void> {
@@ -59,41 +84,94 @@ export class PatchPreviewService {
     void vscode.window.setStatusBarMessage(title, 3000);
   }
 
+  public async showChangePreview(title: string, content: string): Promise<PatchApplyResult> {
+    const proposedChange = extractProposedWorkspaceChange(content);
+
+    if (!proposedChange) {
+      const message =
+        "Collamdex no encontro un diff unificado ni operaciones de archivo aplicables.";
+      void vscode.window.showWarningMessage(message);
+      return { changes: [], message, status: "invalid" };
+    }
+
+    await this.showPreviewDocument(title, proposedChange.content, proposedChange.language);
+    return {
+      changes: proposedChange.changes,
+      message: "Cambios abiertos en preview. Esperando confirmacion.",
+      status: "preview"
+    };
+  }
+
+  public async applyProposedChanges(content: string): Promise<PatchApplyResult> {
+    const proposedChange = extractProposedWorkspaceChange(content);
+
+    if (!proposedChange) {
+      const message =
+        "Collamdex no encontro un diff unificado ni operaciones de archivo aplicables.";
+      void vscode.window.showWarningMessage(message);
+      return { changes: [], message, status: "invalid" };
+    }
+
+    if (proposedChange.kind === "patch") {
+      return this.applyPatchWithGit(proposedChange.content, proposedChange.changes);
+    }
+
+    return this.applyFileOperations(proposedChange.fileOperations ?? [], proposedChange.changes);
+  }
+
   public async showPatchAndOfferApply(
     title: string,
     content: string,
     requireConfirmation: boolean
   ): Promise<PatchApplyResult> {
-    const patch = extractUnifiedDiff(content);
-    const changes = patch ? summarizePatch(patch) : [];
-    await this.showPatch(title, patch ?? content);
+    const proposedChange = extractProposedWorkspaceChange(content);
 
-    if (!patch) {
-      const message = "Collamdex no encontro un diff unificado aplicable en la respuesta.";
+    if (!proposedChange) {
+      const message =
+        "Collamdex no encontro un diff unificado ni operaciones de archivo aplicables.";
       void vscode.window.showWarningMessage(
         message
       );
-      return { changes, message, status: "invalid" };
+      return { changes: [], message, status: "invalid" };
     }
+
+    await this.showPreviewDocument(title, proposedChange.content, proposedChange.language);
 
     if (requireConfirmation) {
       const answer = await vscode.window.showInformationMessage(
-        "Collamdex preparo un patch. Revisa la vista diff antes de aplicarlo.",
+        "Collamdex preparo cambios. Revisa la vista preview antes de aplicarlos.",
         { modal: true },
-        "Aplicar patch",
+        "Aplicar cambios",
         "Solo preview"
       );
 
-      if (answer !== "Aplicar patch") {
+      if (answer !== "Aplicar cambios") {
         return {
-          changes,
-          message: "Patch abierto en preview. No se aplicaron cambios.",
+          changes: proposedChange.changes,
+          message: "Cambios abiertos en preview. No se aplico nada.",
           status: "preview"
         };
       }
     }
 
-    return this.applyPatchWithGit(patch, changes);
+    return this.applyProposedChanges(content);
+  }
+
+  private async showPreviewDocument(
+    title: string,
+    content: string,
+    language: "diff" | "json"
+  ): Promise<void> {
+    const document = await vscode.workspace.openTextDocument({
+      content,
+      language
+    });
+
+    await vscode.window.showTextDocument(document, {
+      preview: false,
+      viewColumn: vscode.ViewColumn.Beside
+    });
+    void vscode.window.setStatusBarMessage(title, 3000);
   }
 
   private async applyPatchWithGit(
@@ -126,6 +204,51 @@ export class PatchPreviewService {
       return { changes, message, status: "failed" };
     } finally {
       await fs.unlink(patchPath).catch(() => undefined);
+    }
+  }
+
+  private async applyFileOperations(
+    operations: readonly WorkspaceFileOperation[],
+    changes: readonly PatchFileChange[]
+  ): Promise<PatchApplyResult> {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+
+    if (!workspaceFolder) {
+      const message = "No hay workspace abierto para aplicar cambios.";
+      void vscode.window.showErrorMessage(message);
+      return { changes, message, status: "no-workspace" };
+    }
+
+    if (operations.length === 0) {
+      const message = "No hay operaciones de archivo validas para aplicar.";
+      void vscode.window.showWarningMessage(message);
+      return { changes, message, status: "invalid" };
+    }
+
+    try {
+      for (const operation of operations) {
+        const filePath = resolveWorkspaceFilePath(workspaceFolder.uri.fsPath, operation.path);
+
+        if (operation.operation === "delete") {
+          await fs.unlink(filePath);
+          continue;
+        }
+
+        if (operation.content === undefined) {
+          throw new Error(`La operacion de escritura no incluye contenido: ${operation.path}`);
+        }
+
+        await fs.mkdir(path.dirname(filePath), { recursive: true });
+        await fs.writeFile(filePath, operation.content, "utf8");
+      }
+
+      const message = "Cambios aplicados al workspace.";
+      void vscode.window.showInformationMessage(message);
+      return { changes, message, status: "applied" };
+    } catch (error) {
+      const message = `No se pudieron aplicar los cambios: ${formatCommandError(error)}`;
+      void vscode.window.showErrorMessage(message);
+      return { changes, message, status: "failed" };
     }
   }
 }
@@ -166,6 +289,33 @@ function extractUnifiedDiff(content: string): string | undefined {
   return looksLikeUnifiedDiff(trimmed) ? ensureTrailingNewline(trimmed) : undefined;
 }
 
+function extractProposedWorkspaceChange(content: string): ProposedWorkspaceChange | undefined {
+  const patch = extractUnifiedDiff(content);
+
+  if (patch) {
+    return {
+      changes: summarizePatch(patch),
+      content: patch,
+      kind: "patch",
+      language: "diff"
+    };
+  }
+
+  const fileOperations = extractWorkspaceFileOperations(content);
+
+  if (fileOperations.length === 0) {
+    return undefined;
+  }
+
+  return {
+    changes: summarizeFileOperations(fileOperations),
+    content: buildFileOperationsPreview(fileOperations),
+    fileOperations,
+    kind: "file-operations",
+    language: "diff"
+  };
+}
+
 function looksLikeUnifiedDiff(value: string): boolean {
   return (
     /(^|\n)(diff --git\s+a\/|\-\-\-\s+(?:a\/|\/dev\/null|[^\n]+))/.test(value) &&
@@ -176,6 +326,205 @@ function looksLikeUnifiedDiff(value: string): boolean {
 
 function ensureTrailingNewline(value: string): string {
   return value.endsWith("\n") ? value : `${value}\n`;
+}
+
+function extractWorkspaceFileOperations(content: string): readonly WorkspaceFileOperation[] {
+  const operations: WorkspaceFileOperation[] = [];
+  const fencedBlocks = content.matchAll(
+    /```(collamdex-files|collamdex-file|collamdex-tool)\s*\r?\n([\s\S]*?)```/gi
+  );
+
+  for (const match of fencedBlocks) {
+    const blockType = match[1]?.toLowerCase();
+    const raw = match[2]?.trim();
+
+    if (!blockType || !raw) {
+      continue;
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      const parsedOperations =
+        blockType === "collamdex-tool"
+          ? normalizeToolCall(parsed)
+          : normalizeFileOperationContainer(parsed);
+      operations.push(...parsedOperations);
+    } catch {
+      // Invalid structured blocks are ignored so normal markdown answers still render.
+    }
+  }
+
+  return operations;
+}
+
+function normalizeToolCall(value: unknown): readonly WorkspaceFileOperation[] {
+  if (!isRecord(value)) {
+    return [];
+  }
+
+  const name = typeof value.name === "string" ? value.name : "";
+  const input = isRecord(value.input) ? value.input : {};
+  const normalizedName = name.toLowerCase();
+
+  if (normalizedName === "applyworkspaceedit") {
+    return normalizeFileOperationContainer(input.changes ?? input.operations ?? input);
+  }
+
+  if (
+    normalizedName === "writefile" ||
+    normalizedName === "createfile" ||
+    normalizedName === "modifyfile"
+  ) {
+    const operation = normalizedName === "createfile" ? "create" : "write";
+    const normalized = normalizeFileOperation({
+      content: input.content,
+      operation,
+      path: input.path
+    });
+    return normalized ? [normalized] : [];
+  }
+
+  if (normalizedName === "deletefile" || normalizedName === "removefile") {
+    const normalized = normalizeFileOperation({
+      operation: "delete",
+      path: input.path
+    });
+    return normalized ? [normalized] : [];
+  }
+
+  return [];
+}
+
+function normalizeFileOperationContainer(value: unknown): readonly WorkspaceFileOperation[] {
+  const candidates = Array.isArray(value)
+    ? value
+    : isRecord(value) && Array.isArray(value.files)
+      ? value.files
+      : isRecord(value) && Array.isArray(value.operations)
+        ? value.operations
+        : isRecord(value) && Array.isArray(value.changes)
+          ? value.changes
+          : [value];
+
+  return candidates
+    .map((candidate) => normalizeFileOperation(candidate))
+    .filter((operation): operation is WorkspaceFileOperation => operation !== undefined);
+}
+
+function normalizeFileOperation(value: unknown): WorkspaceFileOperation | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const pathValue = value.path ?? value.file ?? value.target;
+
+  if (typeof pathValue !== "string" || pathValue.trim().length === 0) {
+    return undefined;
+  }
+
+  const operationValue = String(
+    value.operation ?? value.action ?? value.type ?? "write"
+  ).toLowerCase();
+  const operation = normalizeFileOperationKind(operationValue);
+
+  if (!operation) {
+    return undefined;
+  }
+
+  if (operation === "delete") {
+    return {
+      operation,
+      path: pathValue.trim()
+    };
+  }
+
+  if (typeof value.content !== "string") {
+    return undefined;
+  }
+
+  return {
+    content: value.content,
+    operation,
+    path: pathValue.trim()
+  };
+}
+
+function normalizeFileOperationKind(value: string): WorkspaceFileOperationKind | undefined {
+  switch (value) {
+    case "create":
+    case "edit":
+    case "update":
+    case "write":
+      return value === "update" ? "edit" : value;
+    case "delete":
+    case "remove":
+    case "unlink":
+      return "delete";
+    default:
+      return undefined;
+  }
+}
+
+function summarizeFileOperations(
+  operations: readonly WorkspaceFileOperation[]
+): readonly PatchFileChange[] {
+  return operations.map((operation) => {
+    const addedLines =
+      operation.operation === "delete" ? 0 : countContentLines(operation.content ?? "");
+    return {
+      addedLines,
+      operation:
+        operation.operation === "delete" ? "delete" : fileOperationToSummary(operation.operation),
+      path: operation.path,
+      removedLines: 0
+    };
+  });
+}
+
+function fileOperationToSummary(operation: WorkspaceFileWriteOperation): PatchFileOperation {
+  if (operation === "create") {
+    return "create";
+  }
+
+  return "edit";
+}
+
+function countContentLines(content: string): number {
+  if (content.length === 0) {
+    return 0;
+  }
+
+  return content.replace(/\n$/, "").split(/\r?\n/).length;
+}
+
+function buildFileOperationsPreview(operations: readonly WorkspaceFileOperation[]): string {
+  const lines: string[] = [];
+
+  for (const operation of operations) {
+    if (operation.operation === "delete") {
+      lines.push(
+        `diff --collamdex delete ${operation.path}`,
+        `--- a/${operation.path}`,
+        "+++ /dev/null",
+        "@@ file delete @@",
+        `- ${operation.path}`,
+        ""
+      );
+      continue;
+    }
+
+    const contentLines = (operation.content ?? "").split(/\r?\n/);
+    lines.push(
+      `diff --collamdex ${operation.operation} ${operation.path}`,
+      operation.operation === "create" ? "--- /dev/null" : `--- a/${operation.path}`,
+      `+++ b/${operation.path}`,
+      "@@ full file write @@",
+      ...contentLines.map((line) => `+${line}`),
+      ""
+    );
+  }
+
+  return ensureTrailingNewline(lines.join("\n"));
 }
 
 function summarizePatch(patch: string): readonly PatchFileChange[] {
@@ -324,6 +673,31 @@ function unquotePatchPath(value: string): string {
   return value;
 }
 
+function resolveWorkspaceFilePath(workspaceRoot: string, relativePath: string): string {
+  const normalizedInput = relativePath.replace(/\\/g, "/").replace(/^[ab]\//, "");
+
+  if (
+    normalizedInput.length === 0 ||
+    normalizedInput.includes("\0") ||
+    path.isAbsolute(normalizedInput)
+  ) {
+    throw new Error(`Ruta de workspace invalida: ${relativePath}`);
+  }
+
+  const resolvedPath = path.resolve(workspaceRoot, normalizedInput);
+  const relativeToWorkspace = path.relative(workspaceRoot, resolvedPath);
+
+  if (
+    relativeToWorkspace.length === 0 ||
+    relativeToWorkspace.startsWith("..") ||
+    path.isAbsolute(relativeToWorkspace)
+  ) {
+    throw new Error(`La ruta sale del workspace: ${relativePath}`);
+  }
+
+  return resolvedPath;
+}
+
 function formatCommandError(error: unknown): string {
   if (error instanceof Error) {
     const commandError = error as Error & { readonly stderr?: string; readonly stdout?: string };
@@ -331,4 +705,8 @@ function formatCommandError(error: unknown): string {
   }
 
   return "error desconocido";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

@@ -16,12 +16,12 @@ export const defaultAgentTools: readonly AgentTool[] = [
     requiresConfirmation: false
   },
   {
-    description: "Prepara un patch o bloque de reemplazo para preview.",
+    description: "Prepara un patch unificado o bloque collamdex-files para preview.",
     name: "proposePatch",
     requiresConfirmation: false
   },
   {
-    description: "Aplica cambios al workspace.",
+    description: "Aplica cambios al workspace mediante diff unificado o collamdex-files.",
     name: "applyWorkspaceEdit",
     requiresConfirmation: true
   },

@@ -187,6 +187,16 @@ export function getChatViewHtml(webview: vscode.Webview, extensionUri: vscode.Ur
       display: none;
     }
 
+    .pending-actions {
+      display: grid;
+      gap: 8px;
+      grid-template-columns: 1fr 1fr;
+    }
+
+    .pending-actions.is-hidden {
+      display: none;
+    }
+
     .file-change {
       align-items: center;
       animation: fileChangeIn 360ms ease both;
@@ -359,6 +369,10 @@ export function getChatViewHtml(webview: vscode.Webview, extensionUri: vscode.Ur
           <span id="tokenCounter">0 caracteres</span>
         </div>
         <div id="fileChanges" class="file-changes" aria-label="Cambios por archivo"></div>
+        <div id="pendingActions" class="pending-actions is-hidden">
+          <button id="applyChangesButton">Aplicar cambios</button>
+          <button id="discardChangesButton" class="secondary">Solo preview</button>
+        </div>
         <div class="progress-track">
           <div id="progressBar" class="progress-bar"></div>
         </div>
@@ -394,12 +408,16 @@ export function getChatViewHtml(webview: vscode.Webview, extensionUri: vscode.Ur
     const addedCounterEl = document.getElementById("addedCounter");
     const removedCounterEl = document.getElementById("removedCounter");
     const fileChangesEl = document.getElementById("fileChanges");
+    const pendingActionsEl = document.getElementById("pendingActions");
+    const applyChangesButton = document.getElementById("applyChangesButton");
+    const discardChangesButton = document.getElementById("discardChangesButton");
     const tokenCounterEl = document.getElementById("tokenCounter");
     const progressBarEl = document.getElementById("progressBar");
     let assistantMessage;
     let assistantText = "";
     let activityStartedAt = 0;
     let activityTimer;
+    let pendingChangeId;
     let receivedChars = 0;
 
     function addMessage(role, text) {
@@ -444,6 +462,7 @@ export function getChatViewHtml(webview: vscode.Webview, extensionUri: vscode.Ur
       setRollingValue(addedCounterEl, "000");
       setRollingValue(removedCounterEl, "000");
       fileChangesEl.replaceChildren();
+      hidePendingActions();
       tokenCounterEl.textContent = "0 caracteres";
       progressBarEl.style.width = "2%";
       clearInterval(activityTimer);
@@ -545,6 +564,21 @@ export function getChatViewHtml(webview: vscode.Webview, extensionUri: vscode.Ur
       setRollingValue(addedCounterEl, padNumber(added, 3));
       setRollingValue(removedCounterEl, padNumber(removed, 3));
       tokenCounterEl.textContent = String(changes.length) + " archivo" + (changes.length === 1 ? "" : "s");
+    }
+
+    function showPendingActions(id, detail) {
+      pendingChangeId = id;
+      pendingActionsEl.classList.remove("is-hidden");
+      applyChangesButton.disabled = false;
+      discardChangesButton.disabled = false;
+      setActivity("Esperando confirmacion", detail || "Revisa el preview antes de aplicar.", "forward");
+    }
+
+    function hidePendingActions() {
+      pendingChangeId = undefined;
+      pendingActionsEl.classList.add("is-hidden");
+      applyChangesButton.disabled = true;
+      discardChangesButton.disabled = true;
     }
 
     function getOperationLabel(operation) {
@@ -656,11 +690,16 @@ export function getChatViewHtml(webview: vscode.Webview, extensionUri: vscode.Ur
 
       if (message.type === "patch-summary") {
         activityEl.classList.remove("complete");
-        setActivity("Aplicando patch", "Preparando cambios por archivo...", "forward");
+        setActivity("Preparando cambios", "Preparando cambios por archivo...", "forward");
         renderPatchSummary(message.changes);
       }
 
+      if (message.type === "pending-changes") {
+        showPendingActions(message.id, message.detail);
+      }
+
       if (message.type === "patch-result") {
+        hidePendingActions();
         setActivity(
           message.status === "applied" ? "Cambios aplicados" : "Patch en preview",
           message.detail,
@@ -708,6 +747,25 @@ export function getChatViewHtml(webview: vscode.Webview, extensionUri: vscode.Ur
       vscode.postMessage({ type: "cancel" });
     });
 
+    applyChangesButton.addEventListener("click", () => {
+      if (!pendingChangeId) {
+        return;
+      }
+
+      applyChangesButton.disabled = true;
+      discardChangesButton.disabled = true;
+      vscode.postMessage({ type: "applyPendingChanges", id: pendingChangeId });
+    });
+
+    discardChangesButton.addEventListener("click", () => {
+      if (!pendingChangeId) {
+        return;
+      }
+
+      vscode.postMessage({ type: "discardPendingChanges", id: pendingChangeId });
+      hidePendingActions();
+    });
+
     refreshButton.addEventListener("click", () => {
       vscode.postMessage({ type: "refreshModels" });
     });
@@ -729,6 +787,7 @@ export function getChatViewHtml(webview: vscode.Webview, extensionUri: vscode.Ur
     setRollingValue(activityClockEl, "00:00");
     setRollingValue(addedCounterEl, "000");
     setRollingValue(removedCounterEl, "000");
+    hidePendingActions();
   </script>
 </body>
 </html>`;

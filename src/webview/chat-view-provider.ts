@@ -29,7 +29,9 @@ interface ModelTestStatus {
 }
 
 type WebviewMessage =
+  | { readonly id: string; readonly type: "applyPendingChanges" }
   | { readonly type: "cancel" }
+  | { readonly id: string; readonly type: "discardPendingChanges" }
   | { readonly type: "ready" }
   | { readonly type: "refreshModels" }
   | { readonly model: string; readonly prompt: string; readonly type: "sendPrompt" }
@@ -37,12 +39,21 @@ type WebviewMessage =
   | { readonly type: "selectModel" }
   | { readonly type: "testModels" };
 
+interface PendingWorkspaceChange {
+  readonly id: string;
+  readonly result: {
+    readonly model: string;
+    readonly text: string;
+  };
+}
+
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "collamdex.chatView";
 
   private abortController: AbortController | undefined;
   private modelTests = new Map<string, ModelTestStatus>();
   private models: readonly OllamaModel[] = [];
+  private pendingChange: PendingWorkspaceChange | undefined;
   private view: vscode.WebviewView | undefined;
 
   public constructor(
@@ -123,6 +134,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case "cancel":
         this.cancel();
         return;
+      case "applyPendingChanges":
+        await this.applyPendingChanges(message.id);
+        return;
+      case "discardPendingChanges":
+        this.discardPendingChanges(message.id);
+        return;
     }
   }
 
@@ -168,25 +185,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         onToken: (token) => this.post({ type: "assistant-token", token })
       });
 
-      if (result && this.agentRuntime.hasPatch(result.text)) {
-        const changes = this.agentRuntime.getPatchSummary(result.text);
+      if (result && this.agentRuntime.hasApplicableChanges(result.text)) {
+        const changes = this.agentRuntime.getChangeSummary(result.text);
         this.post({
-          detail: "Patch detectado. Abriendo preview y confirmacion de aplicacion.",
+          detail: "Cambios detectados. Abriendo preview y preparando confirmacion.",
           direction: "forward",
-          phase: "Revisando patch",
+          phase: "Revisando cambios",
           type: "activity"
         });
         this.post({ changes, type: "patch-summary" });
-        const applyResult = await this.agentRuntime.showResult(result, {
-          openMarkdownWhenNoPatch: false,
-          preferPatch: true
-        });
-        const status = applyResult?.status ?? "preview";
+        const previewResult = await this.agentRuntime.previewChanges(result);
+        const id = createPendingChangeId();
+        this.pendingChange = { id, result };
         const detail =
-          status === "applied"
-            ? `Patch aplicado: ${formatFileChangeCount(changes)}.`
-            : applyResult?.message ?? "Patch abierto en preview. No se aplicaron cambios.";
-        this.post({ detail, status, type: "patch-result" });
+          previewResult.status === "invalid"
+            ? previewResult.message
+            : `Preview abierto: ${formatFileChangeCount(changes)}. Confirma en el panel para escribir.`;
+        this.post({ detail, id, type: "pending-changes" });
         this.post({ detail, type: "activity-complete" });
       }
     } catch (error) {
@@ -201,6 +216,47 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     } finally {
       this.post({ type: "busy", value: false });
     }
+  }
+
+  private async applyPendingChanges(id: string): Promise<void> {
+    const pendingChange = this.pendingChange;
+
+    if (!pendingChange || pendingChange.id !== id) {
+      this.post({ type: "error", message: "No hay cambios pendientes para aplicar." });
+      return;
+    }
+
+    this.post({ type: "busy", value: true });
+    this.post({
+      detail: "Aplicando cambios confirmados por el usuario.",
+      direction: "forward",
+      phase: "Aplicando cambios",
+      type: "activity"
+    });
+
+    try {
+      const applyResult = await this.agentRuntime.applyChanges(pendingChange.result);
+      const detail =
+        applyResult.status === "applied"
+          ? `Cambios aplicados: ${formatFileChangeCount(applyResult.changes)}.`
+          : applyResult.message;
+      this.pendingChange = applyResult.status === "applied" ? undefined : pendingChange;
+      this.post({ detail, status: applyResult.status, type: "patch-result" });
+      this.post({ detail, type: "activity-complete" });
+    } finally {
+      this.post({ type: "busy", value: false });
+    }
+  }
+
+  private discardPendingChanges(id: string): void {
+    if (this.pendingChange?.id !== id) {
+      return;
+    }
+
+    this.pendingChange = undefined;
+    const detail = "Preview conservado. No se aplicaron cambios.";
+    this.post({ detail, status: "preview", type: "patch-result" });
+    this.post({ detail, type: "activity-complete" });
   }
 
   public async testModels(): Promise<void> {
@@ -481,6 +537,10 @@ function formatFileChangeCount(changes: readonly unknown[]): string {
   }
 
   return `${changes.length} archivos`;
+}
+
+function createPendingChangeId(): string {
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 function getModelKind(model: OllamaModel): string {

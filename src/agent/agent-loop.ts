@@ -59,8 +59,24 @@ export class AgentRuntime {
     return this.patchPreviewService.hasPatch(text);
   }
 
+  public hasApplicableChanges(text: string): boolean {
+    return this.patchPreviewService.hasApplicableChanges(text);
+  }
+
   public getPatchSummary(text: string): readonly PatchFileChange[] {
     return this.patchPreviewService.getPatchSummary(text);
+  }
+
+  public getChangeSummary(text: string): readonly PatchFileChange[] {
+    return this.patchPreviewService.getChangeSummary(text);
+  }
+
+  public async previewChanges(result: AgentRunResult): Promise<PatchApplyResult> {
+    return this.patchPreviewService.showChangePreview(`Collamdex - ${result.model}`, result.text);
+  }
+
+  public async applyChanges(result: AgentRunResult): Promise<PatchApplyResult> {
+    return this.patchPreviewService.applyProposedChanges(result.text);
   }
 
   public async showResult(
@@ -322,7 +338,7 @@ export class AgentRuntime {
     }
 
     const perFileLimit = Math.max(1200, Math.floor(maxChars / 4));
-    const importantFiles = ["README.md", "package.json"];
+    const importantFiles = ["AGENTS.md", "README.md", "package.json"];
 
     for (const fileName of importantFiles) {
       const content = await this.readWorkspaceTextFile(workspaceFolder.uri, fileName, perFileLimit);
@@ -362,6 +378,8 @@ export class AgentRuntime {
         return [
           options.task ?? "Resuelve la tarea indicada por el usuario.",
           "Si la tarea requiere modificar archivos, devuelve un diff unificado aplicable con git apply.",
+          "Para crear, reescribir o eliminar archivos completos puedes devolver un bloque JSON ```collamdex-files``` con operation, path y content.",
+          "No digas que has escrito archivos si solo estas proponiendo cambios; Collamdex pedira confirmacion antes de aplicar.",
           "No uses placeholders cuando el dato solicitado aparezca en el contexto del workspace."
         ].join("\n");
     }
@@ -373,7 +391,8 @@ export class AgentRuntime {
       "Trabajas con modelos Ollama locales y no dependes de servicios externos.",
       "Responde en espanol cuando expliques, pero conserva codigo, APIs y errores en su idioma original.",
       "No inventes contenido de archivos existentes que no aparezca en el contexto.",
-      "Si propones cambios, devuelve un resumen breve y un patch unificado o bloque verificable.",
+      "Si propones cambios, devuelve un resumen breve y un patch unificado aplicable.",
+      "Si necesitas crear, reescribir o eliminar archivos completos, puedes usar un bloque ```collamdex-files``` con JSON valido.",
       "No pidas ejecutar comandos destructivos.",
       "Cualquier escritura o comando de terminal requiere confirmacion del usuario."
     ].join("\n");
