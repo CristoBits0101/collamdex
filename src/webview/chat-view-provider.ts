@@ -22,6 +22,11 @@ interface WebviewState {
   readonly statusText: string;
 }
 
+interface WebviewContextSummary {
+  readonly files: readonly string[];
+  readonly workspaceName: string;
+}
+
 interface ModelTestStatus {
   readonly elapsedMs?: number;
   readonly firstTokenMs?: number;
@@ -148,6 +153,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       await this.modelService.setSelectedModel(modelName);
     }
 
+    this.post({ summary: await this.buildContextSummary(), type: "context-summary" });
     this.post({ type: "busy", value: true });
     this.post({
       detail: `Modelo ${modelName || "seleccionado"}. Preparando contexto del proyecto.`,
@@ -202,7 +208,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             ? previewResult.message
             : `Preview abierto: ${formatFileChangeCount(changes)}. Confirma en el panel para escribir.`;
         this.post({ detail, id, type: "pending-changes" });
-        this.post({ detail, type: "activity-complete" });
+      } else if (result && looksLikeWorkspaceMutationRequest(prompt)) {
+        this.post({
+          detail:
+            "El modelo respondio sin diff ni bloque collamdex-files aplicable. No se escribio nada.",
+          type: "activity-complete"
+        });
       }
     } catch (error) {
       const message =
@@ -254,9 +265,35 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     this.pendingChange = undefined;
-    const detail = "Preview conservado. No se aplicaron cambios.";
-    this.post({ detail, status: "preview", type: "patch-result" });
+    const detail = "Cambios cancelados. No se escribio nada en el workspace.";
+    this.post({ detail, status: "discarded", type: "patch-result" });
     this.post({ detail, type: "activity-complete" });
+  }
+
+  private async buildContextSummary(): Promise<WebviewContextSummary> {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    const files: string[] = [];
+    const editor =
+      vscode.window.activeTextEditor ??
+      vscode.window.visibleTextEditors.find((visibleEditor) => visibleEditor.document.uri.scheme === "file") ??
+      vscode.window.visibleTextEditors[0];
+
+    if (editor) {
+      addUnique(files, vscode.workspace.asRelativePath(editor.document.uri));
+    }
+
+    if (workspaceFolder) {
+      for (const fileName of ["AGENTS.md", "README.md", "package.json"]) {
+        if (await workspaceFileExists(workspaceFolder.uri, fileName)) {
+          addUnique(files, fileName);
+        }
+      }
+    }
+
+    return {
+      files,
+      workspaceName: workspaceFolder?.name ?? "sin workspace abierto"
+    };
   }
 
   public async testModels(): Promise<void> {
@@ -502,6 +539,34 @@ function compactText(text: string, maxLength: number): string {
   }
 
   return `${compacted.slice(0, maxLength - 3)}...`;
+}
+
+async function workspaceFileExists(rootUri: vscode.Uri, relativePath: string): Promise<boolean> {
+  try {
+    const stat = await vscode.workspace.fs.stat(vscode.Uri.joinPath(rootUri, relativePath));
+    return (stat.type & vscode.FileType.File) !== 0;
+  } catch {
+    return false;
+  }
+}
+
+function addUnique(values: string[], value: string): void {
+  if (!values.includes(value)) {
+    values.push(value);
+  }
+}
+
+function looksLikeWorkspaceMutationRequest(prompt: string): boolean {
+  return /\b(crea|crear|cree|genera|generar|escribe|escribir|anade|agrega|modifica|actualiza|edita|corrige|arregla|implementa|elimina|borra|reemplaza|write|create|edit|modify|update|delete|remove|add|implement|fix|generate|replace)\b/.test(
+    normalizeForSearch(prompt)
+  );
+}
+
+function normalizeForSearch(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
 }
 
 function formatDuration(ms: number | undefined): string {

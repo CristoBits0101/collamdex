@@ -243,6 +243,70 @@ export class AgentRuntime {
           if (streamResult) {
             this.outputChannel.appendLine(`[Resumen: ${formatChatResult(streamResult)}]`);
           }
+
+          if (this.shouldRequestApplicableChangeRecovery(options, text)) {
+            const recoveryIntro = "\n\n---\nFormato aplicable para Collamdex:\n";
+            text += recoveryIntro;
+            events?.onToken?.(recoveryIntro);
+            this.outputChannel.append(recoveryIntro);
+            progress.report({ message: "Convirtiendo respuesta a cambios aplicables..." });
+            events?.onProgress?.({
+              detail: "La respuesta no traia cambios aplicables. Pidiendo diff o collamdex-files.",
+              direction: "forward",
+              phase: "Preparando cambios"
+            });
+
+            streamResult = await this.client.streamChat(
+              {
+                keep_alive: config.keepAlive,
+                messages: [
+                  {
+                    content: this.getRecoverySystemPrompt(),
+                    role: "system"
+                  },
+                  {
+                    content: this.buildApplicableChangeRecoveryPrompt(options, prompt, text),
+                    role: "user"
+                  }
+                ],
+                model: modelName,
+                options: {
+                  num_ctx: config.numCtx,
+                  temperature: 0
+                },
+                stream: true
+              },
+              (chunk) => {
+                text += chunk;
+                events?.onToken?.(chunk);
+                this.outputChannel.append(chunk);
+              },
+              runController.signal,
+              {
+                onFirstToken: (elapsedMs) => {
+                  const detail = `Primer token de formato aplicable en ${formatDuration(elapsedMs)}.`;
+                  progress.report({ message: detail });
+                  events?.onProgress?.({
+                    detail,
+                    direction: "forward",
+                    phase: "Preparando cambios"
+                  });
+                },
+                onMetrics: (metrics) => {
+                  const detail = formatMetrics(metrics.tokensPerSecond, metrics.evalCount);
+                  progress.report({ message: detail });
+                  events?.onProgress?.({
+                    detail,
+                    direction: "forward",
+                    phase: "Finalizando"
+                  });
+                }
+              }
+            );
+
+            this.outputChannel.appendLine("");
+            this.outputChannel.appendLine(`[Resumen formato aplicable: ${formatChatResult(streamResult)}]`);
+          }
         }
       );
 
@@ -266,6 +330,48 @@ export class AgentRuntime {
         this.abortController = undefined;
       }
     }
+  }
+
+  private shouldRequestApplicableChangeRecovery(
+    options: AgentRunOptions,
+    responseText: string
+  ): boolean {
+    if (this.patchPreviewService.hasApplicableChanges(responseText)) {
+      return false;
+    }
+
+    if (options.action === "fix" || options.action === "generate-tests") {
+      return true;
+    }
+
+    if (options.action !== "task") {
+      return false;
+    }
+
+    return looksLikeWorkspaceMutationRequest(options.task ?? "");
+  }
+
+  private buildApplicableChangeRecoveryPrompt(
+    options: AgentRunOptions,
+    originalPrompt: string,
+    previousResponse: string
+  ): string {
+    return [
+      "La respuesta anterior no incluye un formato aplicable por Collamdex.",
+      "Convierte la solucion a uno de estos formatos y no incluyas explicaciones fuera del formato:",
+      "1. Diff unificado aplicable con git apply para editar archivos existentes.",
+      "2. Bloque ```collamdex-files``` con JSON valido para crear, reescribir o eliminar archivos completos.",
+      "Usa rutas relativas al workspace. Nunca uses rutas absolutas.",
+      "",
+      "Tarea original:",
+      this.getTaskInstruction(options),
+      "",
+      "Contexto y archivos enviados al modelo:",
+      limitText(originalPrompt, 20000),
+      "",
+      "Respuesta anterior:",
+      limitText(previousResponse, 12000)
+    ].join("\n");
   }
 
   private async buildPrompt(options: AgentRunOptions): Promise<string> {
@@ -369,9 +475,9 @@ export class AgentRuntime {
       case "explain":
         return "Explica la seleccion o el archivo activo de forma clara y util.";
       case "fix":
-        return "Propone un fix para la seleccion o el archivo activo. Devuelve preferiblemente un patch unificado.";
+        return "Propone un fix para la seleccion o el archivo activo. Devuelve un diff unificado aplicable con git apply.";
       case "generate-tests":
-        return "Genera tests para el archivo activo. Devuelve el codigo propuesto y explica donde colocarlo.";
+        return "Genera tests para el archivo activo. Si creas o reescribes archivos completos, usa un bloque ```collamdex-files``` con JSON valido.";
       case "review":
         return "Revisa el archivo activo. Prioriza bugs, riesgos, regresiones y tests faltantes.";
       case "task":
@@ -387,6 +493,16 @@ export class AgentRuntime {
     }
   }
 
+  private getRecoverySystemPrompt(): string {
+    return [
+      "Eres Collamdex en modo formateador de cambios.",
+      "Tu unica salida debe ser un diff unificado aplicable con git apply o un bloque ```collamdex-files``` con JSON valido.",
+      "No expliques, no resumas y no digas que ya escribiste archivos.",
+      "Usa solo rutas relativas al workspace.",
+      "Para archivos nuevos o reescrituras completas, prefiere ```collamdex-files```."
+    ].join("\n");
+  }
+
   private getSystemPrompt(): string {
     return [
       "Eres Collamdex, un agente local de codificacion dentro de VS Code.",
@@ -399,6 +515,19 @@ export class AgentRuntime {
       "Cualquier escritura o comando de terminal requiere confirmacion del usuario."
     ].join("\n");
   }
+}
+
+function looksLikeWorkspaceMutationRequest(prompt: string): boolean {
+  return /\b(crea|crear|cree|genera|generar|escribe|escribir|anade|agrega|modifica|actualiza|edita|corrige|arregla|implementa|elimina|borra|reemplaza|write|create|edit|modify|update|delete|remove|add|implement|fix|generate|replace)\b/.test(
+    normalizeForSearch(prompt)
+  );
+}
+
+function normalizeForSearch(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
 }
 
 function formatChatResult(result: OllamaChatResult): string {

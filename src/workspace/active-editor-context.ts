@@ -9,7 +9,7 @@ export interface ActiveEditorContext {
 }
 
 export function getActiveEditorContext(maxChars: number): ActiveEditorContext | undefined {
-  const editor = vscode.window.activeTextEditor;
+  const editor = getEditorForContext();
 
   if (!editor) {
     return undefined;
@@ -26,6 +26,17 @@ export function getActiveEditorContext(maxChars: number): ActiveEditorContext | 
     relativePath: vscode.workspace.asRelativePath(document.uri),
     selectedText: limitText(selectedText, maxChars)
   };
+}
+
+function getEditorForContext(): vscode.TextEditor | undefined {
+  if (vscode.window.activeTextEditor) {
+    return vscode.window.activeTextEditor;
+  }
+
+  return (
+    vscode.window.visibleTextEditors.find((editor) => editor.document.uri.scheme === "file") ??
+    vscode.window.visibleTextEditors[0]
+  );
 }
 
 export function limitText(value: string, maxChars: number): string {
